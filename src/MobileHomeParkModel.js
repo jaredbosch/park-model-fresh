@@ -534,79 +534,73 @@ ${reportContent.innerHTML}
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
     // Save to Supabase (serialized arrays where appropriate)
-try {
-  setSavingReport(true);
+    setSavingReport(true);
+    try {
+      const { data, error } = await supabase
+        .from('reports')
+        .insert([
+          {
+            user_name: contactInfo.name,
+            user_email: contactInfo.email,
+            user_phone: contactInfo.phone,
+            user_company: contactInfo.company,
+            park_name: propertyInfo.name,
+            park_address: propertyInfo.address,
+            park_city: propertyInfo.city,
+            park_state: propertyInfo.state,
+            purchase_price: purchaseInputs.purchasePrice,
+            closing_costs: purchaseInputs.closingCosts,
+            total_investment: calculations.totalInvestment,
+            down_payment_percent: purchaseInputs.downPaymentPercent,
+            down_payment_amount: calculations.downPayment,
+            loan_amount: calculations.loanAmount,
+            interest_rate: purchaseInputs.interestRate,
+            loan_term_years: purchaseInputs.loanTermYears,
+            monthly_payment: calculations.monthlyPayment,
+            annual_debt_service: calculations.annualDebtService,
+            total_lots: calculations.totalUnits,
+            occupied_lots: calculations.occupiedUnits,
+            physical_occupancy: calculations.physicalOccupancy,
+            economic_occupancy: calculations.economicOccupancy,
+            gross_potential_rent: calculations.grossPotentialRent,
+            lot_rent_income: calculations.lotRentIncome,
+            other_income: calculations.totalAdditionalIncome,
+            effective_gross_income: calculations.effectiveGrossIncome,
+            total_operating_expenses: calculations.totalOpEx,
+            management_fee: calculations.managementFee,
+            noi: calculations.noi,
+            cap_rate: calculations.capRate,
+            cash_on_cash: calculations.cashOnCash,
+            dscr: calculations.dscr,
+            irr: calculations.irr,
+            equity_multiple: calculations.equityMultiple,
+            annual_cash_flow: calculations.cashFlow,
+            income_per_unit: calculations.incomePerUnit,
+            expense_per_unit: calculations.expensePerUnit,
+            noi_per_unit: calculations.noiPerUnit,
+            report_html: htmlContent,
+            rent_roll: JSON.stringify(units),
+            income_items: JSON.stringify(additionalIncome),
+            expense_items: JSON.stringify(expenses)
+          }
+        ])
+        .select();
 
-  const saveData = async () => {
-    const { data, error } = await supabase
-      .from('reports')
-      .insert([
-        {
-          user_name: contactInfo.name,
-          user_email: contactInfo.email,
-          user_phone: contactInfo.phone,
-          user_company: contactInfo.company,
-          park_name: propertyInfo.name,
-          park_address: propertyInfo.address,
-          park_city: propertyInfo.city,
-          park_state: propertyInfo.state,
-          purchase_price: purchaseInputs.purchasePrice,
-          closing_costs: purchaseInputs.closingCosts,
-          total_investment: calculations.totalInvestment,
-          down_payment_percent: purchaseInputs.downPaymentPercent,
-          down_payment_amount: calculations.downPayment,
-          loan_amount: calculations.loanAmount,
-          interest_rate: purchaseInputs.interestRate,
-          loan_term_years: purchaseInputs.loanTermYears,
-          monthly_payment: calculations.monthlyPayment,
-          annual_debt_service: calculations.annualDebtService,
-          total_lots: calculations.totalUnits,
-          occupied_lots: calculations.occupiedUnits,
-          physical_occupancy: calculations.physicalOccupancy,
-          economic_occupancy: calculations.economicOccupancy,
-          gross_potential_rent: calculations.grossPotentialRent,
-          lot_rent_income: calculations.lotRentIncome,
-          other_income: calculations.totalAdditionalIncome,
-          effective_gross_income: calculations.effectiveGrossIncome,
-          total_operating_expenses: calculations.totalOpEx,
-          management_fee: calculations.managementFee,
-          noi: calculations.noi,
-          cap_rate: calculations.capRate,
-          cash_on_cash: calculations.cashOnCash,
-          dscr: calculations.dscr,
-          irr: calculations.irr,
-          equity_multiple: calculations.equityMultiple,
-          annual_cash_flow: calculations.cashFlow,
-          income_per_unit: calculations.incomePerUnit,
-          expense_per_unit: calculations.expensePerUnit,
-          noi_per_unit: calculations.noiPerUnit,
-          report_html: htmlContent,
-          rent_roll: JSON.stringify(units),
-          income_items: JSON.stringify(additionalIncome),
-          expense_items: JSON.stringify(expenses)
-        }
-      ])
-      .select();
-
-    if (error) {
-      console.error('❌ Supabase save error:', error);
-      alert('Report downloaded, but failed to save to database.');
-    } else {
-      console.log('✅ Saved report ID:', data && data[0] ? data[0].id : data);
-      alert('Report downloaded and saved to database!');
+      if (error) {
+        console.error('❌ Supabase save error:', error);
+        alert('Report downloaded, but failed to save to database.');
+      } else {
+        console.log('✅ Saved report ID:', data && data[0] ? data[0].id : data);
+        alert('Report downloaded and saved to database!');
+      }
+    } catch (err) {
+      console.error('❌ Error saving report:', err);
+      alert('Report downloaded locally only');
+    } finally {
+      setSavingReport(false);
     }
 
-    setSavingReport(false);
   };
-
-  // Call the async function
-  saveData();
-
-} catch (err) {
-  console.error('❌ Error calling saveData:', err);
-  alert('Report downloaded locally only');
-  setSavingReport(false);
-}
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
