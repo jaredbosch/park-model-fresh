@@ -519,7 +519,36 @@ ${reportContent.innerHTML}
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+// Save to Supabase
+try {
+  const saveResponse = await fetch('/api/save-report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contactInfo,
+      propertyInfo,
+      calculations,
+      units,
+      additionalIncome,
+      expenses,
+      purchaseInputs,
+      irrInputs,
+      reportHtml: htmlContent
+    })
+  });
 
+  if (saveResponse.ok) {
+    const result = await saveResponse.json();
+    console.log('Saved to database:', result.reportId);
+    alert('Report downloaded and saved to database!');
+  } else {
+    console.error('Failed to save');
+    alert('Report downloaded locally, but failed to save to database');
+  }
+} catch (error) {
+  console.error('Error saving report:', error);
+  alert('Report downloaded locally, but failed to save to database');
+}
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
       <div className="bg-white rounded-lg shadow-lg">
