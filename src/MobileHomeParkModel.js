@@ -33,6 +33,14 @@ const MobileHomeParkModel = () => {
     city: '',
     state: ''
   });
+  // Contact info for saving reports (ensure defined to avoid runtime ReferenceError)
+  const [contactInfo, setContactInfo] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    company: ''
+  });
+  const [savingReport, setSavingReport] = useState(false);
   
   // Additional Income Inputs
   const [additionalIncome, setAdditionalIncome] = useState([
@@ -412,7 +420,7 @@ const MobileHomeParkModel = () => {
     return `${value.toFixed(2)}%`;
   };
 
-  const downloadReport = () => {
+  const downloadReport = async () => {
     const reportContent = document.getElementById('report');
     if (!reportContent) return;
 
@@ -522,69 +530,84 @@ ${reportContent.innerHTML}
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-// Save to Supabase
-try {
-  const { data, error } = await supabase
-    .from('reports')
-    .insert([{
-      user_name: contactInfo.name,
-      user_email: contactInfo.email,
-      user_phone: contactInfo.phone,
-      user_company: contactInfo.company,
-      park_name: propertyInfo.name,
-      park_address: propertyInfo.address,
-      park_city: propertyInfo.city,
-      park_state: propertyInfo.state,
-      purchase_price: purchaseInputs.purchasePrice,
-      closing_costs: purchaseInputs.closingCosts,
-      total_investment: calculations.totalInvestment,
-      down_payment_percent: purchaseInputs.downPaymentPercent,
-      down_payment_amount: calculations.downPayment,
-      loan_amount: calculations.loanAmount,
-      interest_rate: purchaseInputs.interestRate,
-      loan_term_years: purchaseInputs.loanTermYears,
-      monthly_payment: calculations.monthlyPayment,
-      annual_debt_service: calculations.annualDebtService,
-      total_lots: calculations.totalUnits,
-      occupied_lots: calculations.occupiedUnits,
-      physical_occupancy: calculations.physicalOccupancy,
-      economic_occupancy: calculations.economicOccupancy,
-      gross_potential_rent: calculations.grossPotentialRent,
-      lot_rent_income: calculations.lotRentIncome,
-      other_income: calculations.totalAdditionalIncome,
-      effective_gross_income: calculations.effectiveGrossIncome,
-      total_operating_expenses: calculations.totalOpEx,
-      management_fee: calculations.managementFee,
-      noi: calculations.noi,
-      cap_rate: calculations.capRate,
-      cash_on_cash: calculations.cashOnCash,
-      dscr: calculations.dscr,
-      irr: calculations.irr,
-      equity_multiple: calculations.equityMultiple,
-      annual_cash_flow: calculations.cashFlow,
-      income_per_unit: calculations.incomePerUnit,
-      expense_per_unit: calculations.expensePerUnit,
-      noi_per_unit: calculations.noiPerUnit,
-      report_html: htmlContent,
-      rent_roll: units,
-      income_items: additionalIncome,
-      expense_items: expenses
-    }])
-    .select();
+    // Delay revoking the object URL to avoid some browsers cancelling the download
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-  if (error) {
-    console.error('Supabase error:', error);
-    alert('Report downloaded, but failed to save to database');
-  } else {
-    console.log('Saved report:', data[0].id);
-    alert('Report downloaded and saved to database!');
-  }
-} catch (error) {
-  console.error('Error:', error);
+    // Save to Supabase (serialized arrays where appropriate)
+try {
+  setSavingReport(true);
+
+  const saveData = async () => {
+    const { data, error } = await supabase
+      .from('reports')
+      .insert([
+        {
+          user_name: contactInfo.name,
+          user_email: contactInfo.email,
+          user_phone: contactInfo.phone,
+          user_company: contactInfo.company,
+          park_name: propertyInfo.name,
+          park_address: propertyInfo.address,
+          park_city: propertyInfo.city,
+          park_state: propertyInfo.state,
+          purchase_price: purchaseInputs.purchasePrice,
+          closing_costs: purchaseInputs.closingCosts,
+          total_investment: calculations.totalInvestment,
+          down_payment_percent: purchaseInputs.downPaymentPercent,
+          down_payment_amount: calculations.downPayment,
+          loan_amount: calculations.loanAmount,
+          interest_rate: purchaseInputs.interestRate,
+          loan_term_years: purchaseInputs.loanTermYears,
+          monthly_payment: calculations.monthlyPayment,
+          annual_debt_service: calculations.annualDebtService,
+          total_lots: calculations.totalUnits,
+          occupied_lots: calculations.occupiedUnits,
+          physical_occupancy: calculations.physicalOccupancy,
+          economic_occupancy: calculations.economicOccupancy,
+          gross_potential_rent: calculations.grossPotentialRent,
+          lot_rent_income: calculations.lotRentIncome,
+          other_income: calculations.totalAdditionalIncome,
+          effective_gross_income: calculations.effectiveGrossIncome,
+          total_operating_expenses: calculations.totalOpEx,
+          management_fee: calculations.managementFee,
+          noi: calculations.noi,
+          cap_rate: calculations.capRate,
+          cash_on_cash: calculations.cashOnCash,
+          dscr: calculations.dscr,
+          irr: calculations.irr,
+          equity_multiple: calculations.equityMultiple,
+          annual_cash_flow: calculations.cashFlow,
+          income_per_unit: calculations.incomePerUnit,
+          expense_per_unit: calculations.expensePerUnit,
+          noi_per_unit: calculations.noiPerUnit,
+          report_html: htmlContent,
+          rent_roll: JSON.stringify(units),
+          income_items: JSON.stringify(additionalIncome),
+          expense_items: JSON.stringify(expenses)
+        }
+      ])
+      .select();
+
+    if (error) {
+      console.error('❌ Supabase save error:', error);
+      alert('Report downloaded, but failed to save to database.');
+    } else {
+      console.log('✅ Saved report ID:', data && data[0] ? data[0].id : data);
+      alert('Report downloaded and saved to database!');
+    }
+
+    setSavingReport(false);
+  };
+
+  // Call the async function
+  saveData();
+
+} catch (err) {
+  console.error('❌ Error calling saveData:', err);
   alert('Report downloaded locally only');
+  setSavingReport(false);
 }
+
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
       <div className="bg-white rounded-lg shadow-lg">
@@ -1574,14 +1597,47 @@ try {
 
           {activeTab === 'report' && (
             <div className="bg-white">
-              <div className="flex justify-end mb-4 print:hidden">
-                <button
-                  onClick={downloadReport}
-                  className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition-colors flex items-center space-x-2"
-                >
-                  <Download size={20} />
-                  <span>Download Report</span>
-                </button>
+              <div className="flex items-center justify-between mb-4 print:hidden">
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="text"
+                    placeholder="Name"
+                    value={contactInfo.name}
+                    onChange={(e) => setContactInfo({...contactInfo, name: e.target.value})}
+                    className="p-2 border border-gray-300 rounded bg-white text-sm w-40"
+                  />
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={contactInfo.email}
+                    onChange={(e) => setContactInfo({...contactInfo, email: e.target.value})}
+                    className="p-2 border border-gray-300 rounded bg-white text-sm w-48"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Company"
+                    value={contactInfo.company}
+                    onChange={(e) => setContactInfo({...contactInfo, company: e.target.value})}
+                    className="p-2 border border-gray-300 rounded bg-white text-sm w-40"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="Phone"
+                    value={contactInfo.phone}
+                    onChange={(e) => setContactInfo({...contactInfo, phone: e.target.value})}
+                    className="p-2 border border-gray-300 rounded bg-white text-sm w-36"
+                  />
+                </div>
+                <div>
+                  <button
+                    onClick={downloadReport}
+                    className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition-colors flex items-center space-x-2"
+                    disabled={savingReport}
+                  >
+                    <Download size={20} />
+                    <span>{savingReport ? 'Saving...' : 'Download Report'}</span>
+                  </button>
+                </div>
               </div>
               
               <div className="bg-white p-12 shadow-sm border border-gray-200" id="report">
