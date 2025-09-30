@@ -594,27 +594,27 @@ ${reportContent.innerHTML}
         alert('Report downloaded and saved to database!');
         // ✅ Call your Vercel email API route
     try {
-      const response = await fetch('/api/send-email', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userEmail: contactInfo.email,
-          html: htmlContent,
-        }),
-      });
+  const response = await fetch('/api/send-email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      userEmail: contactInfo.email,
+      html: htmlContent,
+    }),
+  });
 
-      const emailResult = await response.json();
+  const emailResult = await response.json();
 
-      if (!emailResult.success) {
-        console.error('Email send failed:', emailResult.error);
-      } else {
-        console.log('✅ Email sent successfully!');
-      }
-    } catch (err) {
-      console.error('❌ Email send error:', err);
-    }
+  if (!emailResult.success) {
+    console.error('Email send failed:', emailResult.error);
+  } else {
+    console.log('✅ Email sent successfully!');
+  }
+} catch (err) {
+  console.error('❌ Email send error:', err);
+}
   }
       }
     } catch (err) {
