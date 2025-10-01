@@ -10,38 +10,6 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Map camelCase → snake_case
-const keyMap = {
-  additionalIncome: 'additional_income',
-  totalLots: 'total_lots',
-  occupiedLots: 'occupied_lots',
-  physicalOccupancy: 'physical_occupancy',
-  economicOccupancy: 'economic_occupancy',
-  grossPotentialRent: 'gross_potential_rent',
-  lotRentIncome: 'lot_rent_income',
-  otherIncome: 'other_income',
-  effectiveGrossIncome: 'effective_gross_income',
-  totalOperatingExpenses: 'total_operating_expenses',
-  managementFee: 'management_fee',
-  cashOnCash: 'cash_on_cash',
-  annualCashFlow: 'annual_cash_flow',
-  incomePerUnit: 'income_per_unit',
-  expensePerUnit: 'expense_per_unit',
-  noiPerUnit: 'noi_per_unit'
-};
-
-function normalizeKeys(payload) {
-  const normalized = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (keyMap[key]) {
-      normalized[keyMap[key]] = value;
-    } else {
-      normalized[key] = value;
-    }
-  }
-  return normalized;
-}
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -50,8 +18,8 @@ export default async function handler(req, res) {
   try {
     const payload = req.body || {};
 
-    // Generate embedding text
-    const textToEmbed = `${payload.park_name || ''}, ${payload.park_state || ''}\n${payload.report_html || ''}`;
+    // Build embedding text from key fields
+    const textToEmbed = `${payload.propertyInfo?.name || ''}, ${payload.propertyInfo?.state || ''}\n${payload.htmlContent || ''}`;
 
     let embedding = null;
     if (textToEmbed.trim()) {
@@ -62,15 +30,66 @@ export default async function handler(req, res) {
       embedding = embeddingResp.data[0].embedding;
     }
 
-    // Normalize payload keys to match DB
-    const normalized = normalizeKeys({
-      ...payload,
-      embedding,
-    });
+    // Map payload → Supabase schema (only columns that actually exist)
+    const fieldMap = {
+      user_name: payload.contactInfo?.name,
+      user_email: payload.contactInfo?.email,
+      user_phone: payload.contactInfo?.phone,
+      user_company: payload.contactInfo?.company,
 
-    // Remove null/undefined/empty
+      park_name: payload.propertyInfo?.name,
+      park_address: payload.propertyInfo?.address,
+      park_city: payload.propertyInfo?.city,
+      park_state: payload.propertyInfo?.state,
+
+      purchase_price: payload.purchaseInputs?.purchasePrice,
+      closing_costs: payload.purchaseInputs?.closingCosts,
+      total_investment: payload.purchaseInputs?.totalInvestment,
+      down_payment_percent: payload.purchaseInputs?.downPaymentPercent,
+      down_payment_amount: payload.purchaseInputs?.downPaymentAmount,
+      loan_amount: payload.purchaseInputs?.loanAmount,
+      interest_rate: payload.purchaseInputs?.interestRate,
+      loan_term_years: payload.purchaseInputs?.loanTermYears,
+      monthly_payment: payload.purchaseInputs?.monthlyPayment,
+      annual_debt_service: payload.purchaseInputs?.annualDebtService,
+
+      total_lots: payload.propertyInfo?.totalLots,
+      occupied_lots: payload.propertyInfo?.occupiedLots,
+      physical_occupancy: payload.propertyInfo?.physicalOccupancy,
+      economic_occupancy: payload.propertyInfo?.economicOccupancy,
+
+      gross_potential_rent: payload.calculations?.grossPotentialRent,
+      lot_rent_income: payload.calculations?.lotRentIncome,
+      other_income: payload.calculations?.otherIncome,
+      effective_gross_income: payload.calculations?.effectiveGrossIncome,
+      total_operating_expenses: payload.calculations?.totalOperatingExpenses,
+      management_fee: payload.calculations?.managementFee,
+      noi: payload.calculations?.noi,
+      cap_rate: payload.calculations?.capRate,
+      cash_on_cash: payload.calculations?.cashOnCash,
+      dscr: payload.calculations?.dscr,
+      irr: payload.calculations?.irr,
+      equity_multiple: payload.calculations?.equityMultiple,
+      annual_cash_flow: payload.calculations?.annualCashFlow,
+      income_per_unit: payload.calculations?.incomePerUnit,
+      expense_per_unit: payload.calculations?.expensePerUnit,
+      noi_per_unit: payload.calculations?.noiPerUnit,
+
+      report_html: payload.htmlContent || '',
+
+      // JSONB fields
+      rent_roll: payload.rentRoll || {},
+      income_items: payload.incomeItems || {},
+      expense_items: payload.expenses || {},
+      additional_income: payload.additionalIncome || {},
+
+      // Embedding vector
+      embedding,
+    };
+
+    // Prune undefined / null / empty values
     const insertData = Object.fromEntries(
-      Object.entries(normalized).filter(([_, v]) => v !== undefined && v !== null && v !== '')
+      Object.entries(fieldMap).filter(([_, v]) => v !== undefined && v !== null && v !== '')
     );
 
     const { data, error } = await supabase
