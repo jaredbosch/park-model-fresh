@@ -536,21 +536,23 @@ ${reportContent.innerHTML}
  // ✅ AFTER: call the API route instead
 try {
   setSavingReport(true);
+// Build API base from env or fallback
+const apiBase = process.env.REACT_APP_API_BASE || "";
 
-  const resp = await fetch("/api/save-report", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contactInfo,
-      propertyInfo,
-      purchaseInputs,
-      calculations,
-      units,
-      additionalIncome,
-      expenses,
-      htmlContent
-    })
-  });
+const resp = await fetch(`${apiBase}/api/save-report`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    contactInfo,
+    propertyInfo,
+    purchaseInputs,
+    calculations,
+    units,
+    additionalIncome,
+    expenses,
+    htmlContent
+  })
+});
 
   const result = await resp.json();
 
