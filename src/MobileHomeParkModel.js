@@ -599,8 +599,7 @@ ${reportContent.innerHTML}
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              userEmail: contactInfo.email,
-              html: htmlContent,
+                html: htmlContent,   // only send the report HTML
             }),
           });
 
