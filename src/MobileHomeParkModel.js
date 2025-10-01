@@ -533,93 +533,41 @@ ${reportContent.innerHTML}
     // Delay revoking the object URL to avoid some browsers cancelling the download
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-    // Save to Supabase (serialized arrays where appropriate)
-    setSavingReport(true);
-    try {
-      const { data, error } = await supabase
-        .from('reports')
-        .insert([
-          {
-            user_name: contactInfo.name,
-            user_email: contactInfo.email,
-            user_phone: contactInfo.phone,
-            user_company: contactInfo.company,
-            park_name: propertyInfo.name,
-            park_address: propertyInfo.address,
-            park_city: propertyInfo.city,
-            park_state: propertyInfo.state,
-            purchase_price: purchaseInputs.purchasePrice,
-            closing_costs: purchaseInputs.closingCosts,
-            total_investment: calculations.totalInvestment,
-            down_payment_percent: purchaseInputs.downPaymentPercent,
-            down_payment_amount: calculations.downPayment,
-            loan_amount: calculations.loanAmount,
-            interest_rate: purchaseInputs.interestRate,
-            loan_term_years: purchaseInputs.loanTermYears,
-            monthly_payment: calculations.monthlyPayment,
-            annual_debt_service: calculations.annualDebtService,
-            total_lots: calculations.totalUnits,
-            occupied_lots: calculations.occupiedUnits,
-            physical_occupancy: calculations.physicalOccupancy,
-            economic_occupancy: calculations.economicOccupancy,
-            gross_potential_rent: calculations.grossPotentialRent,
-            lot_rent_income: calculations.lotRentIncome,
-            other_income: calculations.totalAdditionalIncome,
-            effective_gross_income: calculations.effectiveGrossIncome,
-            total_operating_expenses: calculations.totalOpEx,
-            management_fee: calculations.managementFee,
-            noi: calculations.noi,
-            cap_rate: calculations.capRate,
-            cash_on_cash: calculations.cashOnCash,
-            dscr: calculations.dscr,
-            irr: calculations.irr,
-            equity_multiple: calculations.equityMultiple,
-            annual_cash_flow: calculations.cashFlow,
-            income_per_unit: calculations.incomePerUnit,
-            expense_per_unit: calculations.expensePerUnit,
-            noi_per_unit: calculations.noiPerUnit,
-            report_html: htmlContent,
-            rent_roll: JSON.stringify(units),
-            income_items: JSON.stringify(additionalIncome),
-            expense_items: JSON.stringify(expenses)
-          }
-        ])
-        .select();
+ // ✅ AFTER: call the API route instead
+try {
+  setSavingReport(true);
 
-      if (error) {
-        console.error('❌ Supabase save error:', error);
-        alert('Report downloaded, but failed to save to database.');
-      } else {
-        console.log('✅ Saved report ID:', data && data[0] ? data[0].id : data);
-        alert('Report downloaded and saved to database!');
-        try {
-          const response = await fetch('/api/send-email', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                html: htmlContent,   // only send the report HTML
-            }),
-          });
+  const resp = await fetch("/api/save-report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contactInfo,
+      propertyInfo,
+      purchaseInputs,
+      calculations,
+      units,
+      additionalIncome,
+      expenses,
+      htmlContent
+    })
+  });
 
-          const emailResult = await response.json();
+  const result = await resp.json();
 
-          if (!emailResult.success) {
-            console.error('❌ Email send failed:', emailResult);
-          } else {
-            console.log('✅ Email sent successfully!');
-          }
-        } catch (err) {
-          console.error('❌ Email send error:', err);
-        }
-      }
-    } catch (err) {
-      console.error('❌ Error saving report:', err);
-      alert('Report downloaded locally only');
-    } finally {
-      setSavingReport(false);
-    }
+  if (!resp.ok || !result.success) {
+    console.error("Save failed:", result);
+    alert("Report downloaded, but failed to save to database.");
+  } else {
+    console.log("Saved report ID:", result.id);
+    alert("Report downloaded and saved to database (with embedding)!");
+  }
+} catch (err) {
+  console.error("Error saving report:", err);
+  alert("Report downloaded locally only.");
+} finally {
+  setSavingReport(false);
+}
+
 
   };
 
