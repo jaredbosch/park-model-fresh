@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   try {
     const emailRes = await resend.emails.send({
       from: 'onboarding@resend.dev',   // ✅ sandbox sender
-      to: 'jared@redlinecre.com',      // ✅ always goes to you
+      to: 'boschtj@gmail.com',      // ✅ always goes to you
       subject: '📊 New Report Saved',
       html: `
         <h2>New Report Saved</h2>
@@ -29,11 +29,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, error: error.message });
   }
 }
-
-
-
-
-
-
-
-
