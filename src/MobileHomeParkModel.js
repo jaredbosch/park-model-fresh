@@ -607,7 +607,7 @@ ${reportContent.innerHTML}
           const emailResult = await response.json();
 
           if (!emailResult.success) {
-            console.error('Email send failed:', emailResult.error);
+            console.error('❌ Email send failed:', emailResult);
           } else {
             console.log('✅ Email sent successfully!');
           }
