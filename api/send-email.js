@@ -8,13 +8,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Only grab HTML from the body
   const { html } = req.body;
 
   try {
     const emailRes = await resend.emails.send({
-      from: 'reports@redlinecre.com',   // can be anything, but must be a verified domain if you want better deliverability
-      to: 'jared@redlinecre.com',       // 👈 always your email
+      from: 'onboarding@resend.dev',   // ✅ sandbox sender
+      to: 'jared@redlinecre.com',      // ✅ always goes to you
       subject: '📊 New Report Saved',
       html: `
         <h2>New Report Saved</h2>
@@ -30,3 +29,11 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, error: error.message });
   }
 }
+
+
+
+
+
+
+
+
