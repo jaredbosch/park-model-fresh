@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import { Resend } from 'resend';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -9,6 +10,8 @@ const supabase = createClient(
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -92,6 +95,7 @@ export default async function handler(req, res) {
       Object.entries(fieldMap).filter(([_, v]) => v !== undefined && v !== null && v !== '')
     );
 
+    // Save to Supabase
     const { data, error } = await supabase
       .from('reports')
       .insert([insertData])
@@ -101,6 +105,19 @@ export default async function handler(req, res) {
       console.error('Supabase insert error:', error);
       return res.status(500).json({ error: error.message });
     }
+
+    // Send sandbox email
+    await resend.emails.send({
+      from: "onboarding@resend.dev", // Resend sandbox verified sender
+      to: "boschtj@gmail.com",       // Always your inbox
+      subject: `New Report Saved: ${payload.propertyInfo?.name || "MHP"}`,
+      html: `
+        <h2>New Report Saved</h2>
+        <p><b>Park:</b> ${payload.propertyInfo?.name || "Unknown"} (${payload.propertyInfo?.state || ""})</p>
+        <p><b>User:</b> ${payload.contactInfo?.name || ""} (${payload.contactInfo?.email || ""})</p>
+        <p>Report has been saved to Supabase with embedding.</p>
+      `,
+    });
 
     return res.status(200).json({ success: true, data });
   } catch (err) {
