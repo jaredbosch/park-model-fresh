@@ -10,6 +10,38 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Map camelCase → snake_case
+const keyMap = {
+  additionalIncome: 'additional_income',
+  totalLots: 'total_lots',
+  occupiedLots: 'occupied_lots',
+  physicalOccupancy: 'physical_occupancy',
+  economicOccupancy: 'economic_occupancy',
+  grossPotentialRent: 'gross_potential_rent',
+  lotRentIncome: 'lot_rent_income',
+  otherIncome: 'other_income',
+  effectiveGrossIncome: 'effective_gross_income',
+  totalOperatingExpenses: 'total_operating_expenses',
+  managementFee: 'management_fee',
+  cashOnCash: 'cash_on_cash',
+  annualCashFlow: 'annual_cash_flow',
+  incomePerUnit: 'income_per_unit',
+  expensePerUnit: 'expense_per_unit',
+  noiPerUnit: 'noi_per_unit'
+};
+
+function normalizeKeys(payload) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (keyMap[key]) {
+      normalized[keyMap[key]] = value;
+    } else {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -18,7 +50,7 @@ export default async function handler(req, res) {
   try {
     const payload = req.body || {};
 
-    // Generate embedding text (park info + state + maybe report_html)
+    // Generate embedding text
     const textToEmbed = `${payload.park_name || ''}, ${payload.park_state || ''}\n${payload.report_html || ''}`;
 
     let embedding = null;
@@ -30,12 +62,15 @@ export default async function handler(req, res) {
       embedding = embeddingResp.data[0].embedding;
     }
 
-    // Build insert object
+    // Normalize payload keys to match DB
+    const normalized = normalizeKeys({
+      ...payload,
+      embedding,
+    });
+
+    // Remove null/undefined/empty
     const insertData = Object.fromEntries(
-      Object.entries({
-        ...payload,
-        embedding,
-      }).filter(([_, v]) => v !== undefined && v !== null && v !== '')
+      Object.entries(normalized).filter(([_, v]) => v !== undefined && v !== null && v !== '')
     );
 
     const { data, error } = await supabase
