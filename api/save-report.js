@@ -16,6 +16,69 @@ const supabase =
 
 const REQUIRED_COLUMNS = new Set(['report_html']);
 
+let cachedReportsSchemaStatus = {
+  ok: false,
+  checkedAt: 0,
+  error: null,
+};
+
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+const ensureReportsSchema = async () => {
+  if (!supabase) {
+    return {
+      ok: false,
+      error: {
+        message: 'Supabase credentials are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+      },
+    };
+  }
+
+  const now = Date.now();
+  if (cachedReportsSchemaStatus.ok && now - cachedReportsSchemaStatus.checkedAt < CACHE_DURATION_MS) {
+    return cachedReportsSchemaStatus;
+  }
+
+  const columnsToProbe = ['id', 'report_html'];
+
+  const { error } = await supabase
+    .from('reports')
+    .select(columnsToProbe.join(', '), { head: true, count: 'exact' });
+
+  if (error) {
+    const missingColumnMatch =
+      error.message?.match(/column\s+"?([^"\s]+)"?/i) ||
+      error.message?.match(/column\s+'?([^'\s]+)'?/i) ||
+      error.details?.match(/column\s+"?([^"\s]+)"?/i) ||
+      error.details?.match(/column\s+'?([^'\s]+)'?/i);
+
+    const missingColumn = missingColumnMatch?.[1];
+
+    const errorMessage =
+      error.code === '42P01'
+        ? "Supabase table 'reports' is missing. Create the table before saving reports."
+        : missingColumn
+        ? `Supabase 'reports' table is missing the required column "${missingColumn}".`
+        : 'Unable to access the Supabase reports table. Check the table name and columns.';
+
+    cachedReportsSchemaStatus = {
+      ok: false,
+      checkedAt: now,
+      error: {
+        message: errorMessage,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+      },
+    };
+
+    return cachedReportsSchemaStatus;
+  }
+
+  cachedReportsSchemaStatus = { ok: true, checkedAt: now, error: null };
+  return cachedReportsSchemaStatus;
+};
+
 const parseEmailList = (value) =>
   value
     .split(',')
@@ -40,6 +103,13 @@ export default async function handler(req, res) {
     if (!supabase) {
       console.error('Missing Supabase credentials.');
       return res.status(500).json({ success: false, error: 'Supabase is not configured on the server.' });
+    }
+
+    const schemaStatus = await ensureReportsSchema();
+
+    if (!schemaStatus.ok) {
+      console.error('Supabase reports table validation failed:', schemaStatus.error);
+      return res.status(500).json({ success: false, error: schemaStatus.error?.message, details: schemaStatus.error });
     }
 
     if (!payload.userId) {
@@ -191,8 +261,15 @@ export default async function handler(req, res) {
     }
 
     if (error) {
-      console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: error.message });
+      const sanitizedError = {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        code: error.code,
+      };
+
+      console.error('Supabase insert error:', sanitizedError);
+      return res.status(500).json({ success: false, error: error.message, details: sanitizedError });
     }
 
     if (droppedColumns.length > 0) {

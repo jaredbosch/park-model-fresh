@@ -1032,7 +1032,21 @@ ${reportContent.innerHTML}
 
       if (!response.ok || !result.success) {
         console.error('Save failed:', result);
-        alert('Failed to save the report to your account.');
+
+        const detailParts = [];
+        if (result?.error) {
+          detailParts.push(result.error);
+        }
+        const detailMessage = result?.details?.message || result?.details?.details;
+        if (detailMessage && detailMessage !== result?.error) {
+          detailParts.push(detailMessage);
+        }
+
+        alert(
+          ['Failed to save the report to your account.', ...detailParts]
+            .filter(Boolean)
+            .join('\n\n')
+        );
         return false;
       }
 
@@ -1054,7 +1068,8 @@ ${reportContent.innerHTML}
       return true;
     } catch (err) {
       console.error('Error saving report:', err);
-      alert('Failed to save the report to your account.');
+      const message = err?.message ? `\n\n${err.message}` : '';
+      alert(`Failed to save the report to your account.${message}`);
       return false;
     } finally {
       setSavingReport(false);
