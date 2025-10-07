@@ -14,7 +14,7 @@ const supabase =
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
-const REQUIRED_COLUMNS = new Set(['user_id', 'report_html']);
+const REQUIRED_COLUMNS = new Set(['report_html']);
 
 const parseEmailList = (value) =>
   value
@@ -35,6 +35,7 @@ export default async function handler(req, res) {
 
   try {
     const payload = req.body || {};
+    const authUser = payload.authUser || {};
 
     if (!supabase) {
       console.error('Missing Supabase credentials.');
@@ -44,6 +45,8 @@ export default async function handler(req, res) {
     if (!payload.userId) {
       return res.status(400).json({ success: false, error: 'User ID is required to save a report.' });
     }
+
+    const ownerEmail = payload.contactInfo?.email || authUser.email || '';
 
     // Build embedding text
     const textToEmbed = `${payload.propertyInfo?.name || ''}, ${payload.propertyInfo?.state || ''}\n${payload.htmlContent || ''}`;
@@ -59,13 +62,22 @@ export default async function handler(req, res) {
       console.warn('OPENAI_API_KEY is not set. Embeddings will be skipped.');
     }
 
+    const reportState =
+      payload.reportState && typeof payload.reportState === 'object'
+        ? {
+            ...payload.reportState,
+            ownerUserId: payload.userId,
+            ownerEmail,
+          }
+        : null;
+
     // Map payload → Supabase schema
     const fieldMap = {
       user_id: payload.userId,
       report_name: payload.reportName,
-      report_state: payload.reportState,
+      report_state: reportState,
       user_name: payload.contactInfo?.name,
-      user_email: payload.contactInfo?.email,
+      user_email: ownerEmail,
       user_phone: payload.contactInfo?.phone,
       user_company: payload.contactInfo?.company,
       park_name: payload.propertyInfo?.name,
@@ -193,6 +205,10 @@ export default async function handler(req, res) {
 
     if (payload.contactInfo?.email) {
       notificationRecipients.add(payload.contactInfo.email);
+    }
+
+    if (authUser.email) {
+      notificationRecipients.add(authUser.email);
     }
 
     const recipientList = Array.from(notificationRecipients);

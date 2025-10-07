@@ -49,6 +49,15 @@ const MobileHomeParkModel = () => {
   const [reportName, setReportName] = useState('Mobile Home Park Report');
 
   const [activeTab, setActiveTab] = useState('rent-roll');
+
+  const sessionEmail = useMemo(
+    () =>
+      session?.user?.email ||
+      session?.user?.user_metadata?.email ||
+      session?.user?.user_metadata?.email_address ||
+      '',
+    [session]
+  );
   
   // Rent Roll Inputs
   const [units, setUnits] = useState(() => {
@@ -105,44 +114,102 @@ const MobileHomeParkModel = () => {
   // Proforma Inputs
   const [proformaInputs, setProformaInputs] = useState(() => ({ ...DEFAULT_PROFORMA_INPUTS }));
 
-  const fetchSavedReports = useCallback(async (userId) => {
-    if (!isSupabaseConfigured || !supabase || !userId) {
-      return;
-    }
-
-    setLoadingReports(true);
-    try {
-      let query = supabase
-        .from('reports')
-        .select('id, report_name, park_name, created_at, updated_at')
-        .eq('user_id', userId)
-        .order('updated_at', { ascending: false })
-        .order('created_at', { ascending: false });
-
-      let { data, error } = await query;
-
-      if (error && error.code === '42703') {
-        console.warn('report_name column missing. Falling back to default field list.');
-        ({ data, error } = await supabase
-          .from('reports')
-          .select('id, park_name, created_at, updated_at')
-          .eq('user_id', userId)
-          .order('updated_at', { ascending: false })
-          .order('created_at', { ascending: false }));
-      }
-
-      if (error) {
-        console.error('Error fetching saved reports:', error);
+  const fetchSavedReports = useCallback(
+    async (userId, userEmail) => {
+      if (!isSupabaseConfigured || !supabase || !userId) {
         return;
       }
 
-      setSavedReports(data || []);
-    } catch (err) {
-      console.error('Unexpected error fetching saved reports:', err);
-    } finally {
-      setLoadingReports(false);
-    }
-  }, []);
+      setLoadingReports(true);
+
+      const columnVariants = [
+        'id, report_name, park_name, created_at, updated_at, user_id, user_email, report_state',
+        'id, report_name, park_name, created_at, updated_at, user_email, report_state',
+        'id, report_name, park_name, created_at, updated_at, report_state',
+        'id, park_name, created_at, updated_at, report_state',
+        'id, park_name, created_at, updated_at',
+      ];
+
+      const filterStrategies = [];
+
+      if (userId) {
+        filterStrategies.push({
+          label: 'user_id',
+          apply: (query) => query.eq('user_id', userId),
+        });
+      }
+
+      if (userEmail) {
+        filterStrategies.push({
+          label: 'user_email',
+          apply: (query) => query.eq('user_email', userEmail),
+        });
+      }
+
+      filterStrategies.push({
+        label: 'none',
+        apply: (query) => query,
+      });
+
+      try {
+        for (const columns of columnVariants) {
+          for (const strategy of filterStrategies) {
+            let query = supabase
+              .from('reports')
+              .select(columns)
+              .order('updated_at', { ascending: false })
+              .order('created_at', { ascending: false });
+
+            query = strategy.apply(query);
+
+            const { data, error } = await query;
+
+            if (error) {
+              if (error.code === '42703') {
+                console.warn(
+                  `Supabase reports query skipped due to missing column (strategy: ${strategy.label}, columns: ${columns}).`,
+                  error.message || error
+                );
+                continue;
+              }
+
+              console.error('Error fetching saved reports:', error);
+              continue;
+            }
+
+            if (!Array.isArray(data)) {
+              continue;
+            }
+
+            let resolvedData = data;
+
+            if (strategy.label === 'none' && userId) {
+              resolvedData = data.filter((row) => {
+                const state = row?.report_state;
+                const ownerId =
+                  (state && (state.ownerUserId || state.userId || state.sessionUserId)) || null;
+                return ownerId === userId;
+              });
+            }
+
+            if (resolvedData.length === 0 && strategy.label !== 'none') {
+              continue;
+            }
+
+            setSavedReports(resolvedData);
+            return;
+          }
+        }
+
+        setSavedReports([]);
+      } catch (err) {
+        console.error('Unexpected error fetching saved reports:', err);
+      } finally {
+        setLoadingReports(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -157,8 +224,13 @@ const MobileHomeParkModel = () => {
         const { data } = await supabase.auth.getSession();
         setSession(data?.session || null);
         const userId = data?.session?.user?.id;
+        const userEmail =
+          data?.session?.user?.email ||
+          data?.session?.user?.user_metadata?.email ||
+          data?.session?.user?.user_metadata?.email_address ||
+          '';
         if (userId) {
-          fetchSavedReports(userId);
+          fetchSavedReports(userId, userEmail);
         }
       } catch (err) {
         console.error('Error initialising Supabase session:', err);
@@ -170,9 +242,14 @@ const MobileHomeParkModel = () => {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
       const userId = newSession?.user?.id;
+      const userEmail =
+        newSession?.user?.email ||
+        newSession?.user?.user_metadata?.email ||
+        newSession?.user?.user_metadata?.email_address ||
+        '';
 
       if (userId) {
-        fetchSavedReports(userId);
+        fetchSavedReports(userId, userEmail);
         setAuthModalOpen(false);
       } else {
         setSavedReports([]);
@@ -199,9 +276,9 @@ const MobileHomeParkModel = () => {
 
   const handleRefreshReports = useCallback(() => {
     if (session?.user?.id) {
-      fetchSavedReports(session.user.id);
+      fetchSavedReports(session.user.id, sessionEmail);
     }
-  }, [fetchSavedReports, session]);
+  }, [fetchSavedReports, session, sessionEmail]);
 
   const handleSignOut = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -239,21 +316,79 @@ const MobileHomeParkModel = () => {
     setLoadingReportId(selectedReportId);
 
     try {
-      const { data, error } = await supabase
-        .from('reports')
-        .select('*')
-        .eq('id', selectedReportId)
-        .eq('user_id', session.user.id)
-        .maybeSingle();
+      const strategies = [];
 
-      if (error) {
-        console.error('Error loading saved report:', error);
-        alert('Unable to load the selected report.');
-        return;
+      if (session?.user?.id) {
+        strategies.push({
+          label: 'user_id',
+          apply: (query) => query.eq('user_id', session.user.id),
+        });
+      }
+
+      if (sessionEmail) {
+        strategies.push({
+          label: 'user_email',
+          apply: (query) => query.eq('user_email', sessionEmail),
+        });
+      }
+
+      strategies.push({ label: 'none', apply: (query) => query });
+
+      let data = null;
+      let lastError = null;
+
+      for (const strategy of strategies) {
+        try {
+          let query = supabase
+            .from('reports')
+            .select('*')
+            .eq('id', selectedReportId)
+            .limit(1);
+
+          query = strategy.apply(query);
+
+          const response = await query.maybeSingle();
+
+          if (response.error) {
+            lastError = response.error;
+            if (response.error.code === '42703') {
+              console.warn(
+                `Supabase load strategy skipped due to missing column (${strategy.label}).`,
+                response.error.message || response.error
+              );
+              continue;
+            }
+            continue;
+          }
+
+          if (response.data) {
+            if (strategy.label === 'none' && session?.user?.id) {
+              const ownerId =
+                response.data?.report_state?.ownerUserId ||
+                response.data?.report_state?.userId ||
+                response.data?.report_state?.sessionUserId ||
+                null;
+
+              if (ownerId && ownerId !== session.user.id) {
+                console.warn('Skipping report that does not belong to the current user.');
+                continue;
+              }
+            }
+
+            data = response.data;
+            break;
+          }
+        } catch (strategyError) {
+          lastError = strategyError;
+          console.error('Unexpected error during report load strategy:', strategyError);
+        }
       }
 
       if (!data) {
-        alert('Report not found.');
+        if (lastError) {
+          console.error('Error loading saved report:', lastError);
+        }
+        alert('Unable to load the selected report.');
         return;
       }
 
@@ -292,7 +427,7 @@ const MobileHomeParkModel = () => {
       } else {
         setContactInfo({
           name: data.user_name || '',
-          email: data.user_email || '',
+          email: data.user_email || sessionEmail || '',
           phone: data.user_phone || '',
           company: data.user_company || '',
         });
@@ -364,7 +499,7 @@ const MobileHomeParkModel = () => {
     } finally {
       setLoadingReportId(null);
     }
-  }, [reportName, selectedReportId, session]);
+  }, [reportName, selectedReportId, session, sessionEmail]);
 
   // Add/Remove units
   const addUnit = () => {
@@ -820,6 +955,11 @@ ${reportContent.innerHTML}
     const effectiveReportName = (reportName && reportName.trim()) || propertyInfo.name || 'Untitled Report';
     const normalizedReportId = selectedReportId ? Number(selectedReportId) : null;
 
+    const effectiveContactInfo = {
+      ...contactInfo,
+      email: contactInfo?.email || sessionEmail || '',
+    };
+
     const propertyDetails = {
       ...propertyInfo,
       totalLots: calculations.totalUnits,
@@ -840,7 +980,7 @@ ${reportContent.innerHTML}
     const reportState = {
       units,
       propertyInfo,
-      contactInfo,
+      contactInfo: effectiveContactInfo,
       additionalIncome,
       expenses,
       managementPercent,
@@ -852,6 +992,8 @@ ${reportContent.innerHTML}
       reportName: effectiveReportName,
       activeTab,
       calculations,
+      ownerUserId: session?.user?.id || null,
+      ownerEmail: sessionEmail || null,
     };
 
     setSavingReport(true);
@@ -862,7 +1004,11 @@ ${reportContent.innerHTML}
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contactInfo,
+          authUser: {
+            id: session?.user?.id || null,
+            email: sessionEmail || null,
+          },
+          contactInfo: effectiveContactInfo,
           propertyInfo: propertyDetails,
           purchaseInputs: purchaseDetails,
           calculations,
@@ -894,10 +1040,12 @@ ${reportContent.innerHTML}
 
       if (savedRow?.id) {
         setSelectedReportId(String(savedRow.id));
-        setReportName(savedRow.report_name || effectiveReportName);
+        const savedName =
+          savedRow?.report_state?.reportName || savedRow?.report_name || effectiveReportName;
+        setReportName(savedName);
       }
 
-      await fetchSavedReports(session.user.id);
+      await fetchSavedReports(session.user.id, sessionEmail);
 
       if (showAlert) {
         alert('Report saved to your account.');
@@ -929,6 +1077,7 @@ ${reportContent.innerHTML}
     activeTab,
     selectedReportId,
     fetchSavedReports,
+    sessionEmail,
   ]);
 
   const downloadReport = async () => {
@@ -1000,7 +1149,10 @@ ${reportContent.innerHTML}
           {session?.user ? (
             <>
               <span className="text-sm text-gray-700">
-                Signed in as <span className="font-semibold">{session.user.email}</span>
+                Signed in as{' '}
+                <span className="font-semibold">
+                  {sessionEmail || session.user.email || session.user.id}
+                </span>
               </span>
               <button
                 onClick={handleSignOut}
