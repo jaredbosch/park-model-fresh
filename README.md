@@ -46,7 +46,7 @@ With `RESEND_API_KEY` and `RESEND_FROM_EMAIL` configured the `/api/save-report` 
 
 ## Supabase database setup
 
-Create a `reports` table that can store the generated HTML along with any of the optional metadata you want to persist. The API **requires** the table to exist with at least a `report_html` column. The following SQL creates a compatible schema you can paste into the Supabase SQL editor:
+Create a `reports` table that can store the generated HTML along with any of the optional metadata you want to persist. The API works best when the table includes a `report_html` column, but it will still persist the structured JSON state even if that field is absent (a warning will be logged and returned to the client). The following SQL creates a compatible schema you can paste into the Supabase SQL editor:
 
 ```sql
 create table if not exists public.reports (
@@ -124,7 +124,7 @@ create trigger handle_reports_updated_at
 > $$;
 > ```
 
-If you already have a `reports` table, make sure it includes a `report_html` column (type `text` or `jsonb`) and that any JSON fields such as `report_state`, `rent_roll`, or `additional_income` use the `jsonb` type. The serverless API now validates the schema and returns descriptive errors when the table or required columns are missing.
+If you already have a `reports` table, make sure it includes a `report_html` column (type `text` or `jsonb`) and that any JSON fields such as `report_state`, `rent_roll`, or `additional_income` use the `jsonb` type. When the column is missing the serverless API still saves reports (omitting the raw HTML) and surfaces a warning so you can add it later. The API continues to validate the schema and returns descriptive errors when the table itself is missing or inaccessible.
 
 ## Local development
 

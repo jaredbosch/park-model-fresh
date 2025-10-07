@@ -1,6 +1,6 @@
-import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
-import { Resend } from 'resend';
+const { createClient } = require('@supabase/supabase-js');
+const OpenAI = require('openai');
+const { Resend } = require('resend');
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -14,12 +14,13 @@ const supabase =
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
-const REQUIRED_COLUMNS = new Set(['report_html']);
+const REQUIRED_COLUMNS = new Set();
 
 let cachedReportsSchemaStatus = {
   ok: false,
   checkedAt: 0,
   error: null,
+  warning: null,
 };
 
 const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
@@ -54,6 +55,18 @@ const ensureReportsSchema = async () => {
 
     const missingColumn = missingColumnMatch?.[1];
 
+    if (error.code === '42703' && missingColumn === 'report_html') {
+      cachedReportsSchemaStatus = {
+        ok: true,
+        checkedAt: now,
+        error: null,
+        warning:
+          "Supabase 'reports' table is missing the optional column \"report_html\". The raw HTML will not be stored until the column is added.",
+      };
+
+      return cachedReportsSchemaStatus;
+    }
+
     const errorMessage =
       error.code === '42P01'
         ? "Supabase table 'reports' is missing. Create the table before saving reports."
@@ -70,12 +83,13 @@ const ensureReportsSchema = async () => {
         details: error.details,
         hint: error.hint,
       },
+      warning: null,
     };
 
     return cachedReportsSchemaStatus;
   }
 
-  cachedReportsSchemaStatus = { ok: true, checkedAt: now, error: null };
+  cachedReportsSchemaStatus = { ok: true, checkedAt: now, error: null, warning: null };
   return cachedReportsSchemaStatus;
 };
 
@@ -91,7 +105,7 @@ const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -106,6 +120,10 @@ export default async function handler(req, res) {
     }
 
     const schemaStatus = await ensureReportsSchema();
+
+    if (schemaStatus.warning) {
+      console.warn(schemaStatus.warning);
+    }
 
     if (!schemaStatus.ok) {
       console.error('Supabase reports table validation failed:', schemaStatus.error);
@@ -320,9 +338,18 @@ export default async function handler(req, res) {
       console.warn('No notification recipients configured. Skipping email send.');
     }
 
-    return res.status(200).json({ success: true, data });
+    const responseBody = { success: true, data };
+
+    if (schemaStatus.warning) {
+      responseBody.warnings = [schemaStatus.warning];
+    }
+
+    return res.status(200).json(responseBody);
   } catch (err) {
     console.error('Handler error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
+
+module.exports = handler;
+module.exports.default = handler;

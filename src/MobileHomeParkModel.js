@@ -1050,6 +1050,14 @@ ${reportContent.innerHTML}
         return false;
       }
 
+      const warnings = Array.isArray(result.warnings)
+        ? result.warnings.filter(Boolean)
+        : [];
+
+      if (warnings.length > 0) {
+        console.warn('Report saved with warnings:', warnings);
+      }
+
       const savedRow = Array.isArray(result.data) ? result.data[0] : result.data;
 
       if (savedRow?.id) {
@@ -1062,7 +1070,10 @@ ${reportContent.innerHTML}
       await fetchSavedReports(session.user.id, sessionEmail);
 
       if (showAlert) {
-        alert('Report saved to your account.');
+        const message = warnings.length > 0
+          ? ['Report saved to your account.', ...warnings].join('\n\n')
+          : 'Report saved to your account.';
+        alert(message);
       }
 
       return true;
