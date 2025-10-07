@@ -112,12 +112,24 @@ const MobileHomeParkModel = () => {
 
     setLoadingReports(true);
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('reports')
         .select('id, report_name, park_name, created_at, updated_at')
         .eq('user_id', userId)
         .order('updated_at', { ascending: false })
         .order('created_at', { ascending: false });
+
+      let { data, error } = await query;
+
+      if (error && error.code === '42703') {
+        console.warn('report_name column missing. Falling back to default field list.');
+        ({ data, error } = await supabase
+          .from('reports')
+          .select('id, park_name, created_at, updated_at')
+          .eq('user_id', userId)
+          .order('updated_at', { ascending: false })
+          .order('created_at', { ascending: false }));
+      }
 
       if (error) {
         console.error('Error fetching saved reports:', error);
@@ -229,7 +241,7 @@ const MobileHomeParkModel = () => {
     try {
       const { data, error } = await supabase
         .from('reports')
-        .select('id, report_state, report_name')
+        .select('*')
         .eq('id', selectedReportId)
         .eq('user_id', session.user.id)
         .maybeSingle();
@@ -245,49 +257,106 @@ const MobileHomeParkModel = () => {
         return;
       }
 
-      const savedState = data.report_state || {};
+      const normaliseCollection = (value) => {
+        if (Array.isArray(value)) {
+          return value;
+        }
+        if (value && typeof value === 'object') {
+          return Object.values(value);
+        }
+        return null;
+      };
 
-      if (savedState.units) {
-        setUnits(savedState.units);
+      const savedState = (data.report_state && typeof data.report_state === 'object')
+        ? data.report_state
+        : null;
+
+      const resolvedUnits = savedState?.units || normaliseCollection(data.rent_roll);
+      if (Array.isArray(resolvedUnits) && resolvedUnits.length > 0) {
+        setUnits(resolvedUnits);
       }
-      if (savedState.propertyInfo) {
+
+      if (savedState?.propertyInfo) {
         setPropertyInfo(savedState.propertyInfo);
       } else {
-        setPropertyInfo({ ...DEFAULT_PROPERTY_INFO });
+        setPropertyInfo({
+          name: data.report_name || data.park_name || DEFAULT_PROPERTY_INFO.name,
+          address: data.park_address || '',
+          city: data.park_city || '',
+          state: data.park_state || '',
+        });
       }
-      if (savedState.contactInfo) {
+
+      if (savedState?.contactInfo) {
         setContactInfo(savedState.contactInfo);
       } else {
-        setContactInfo({ ...DEFAULT_CONTACT_INFO });
+        setContactInfo({
+          name: data.user_name || '',
+          email: data.user_email || '',
+          phone: data.user_phone || '',
+          company: data.user_company || '',
+        });
       }
-      if (Array.isArray(savedState.additionalIncome)) {
+
+      if (Array.isArray(savedState?.additionalIncome)) {
         setAdditionalIncome(savedState.additionalIncome);
+      } else {
+        const incomeItems = normaliseCollection(data.additional_income);
+        if (Array.isArray(incomeItems) && incomeItems.length > 0) {
+          setAdditionalIncome(incomeItems);
+        }
       }
-      if (Array.isArray(savedState.expenses)) {
+
+      if (Array.isArray(savedState?.expenses)) {
         setExpenses(savedState.expenses);
+      } else {
+        const expenseItems = normaliseCollection(data.expense_items);
+        if (Array.isArray(expenseItems) && expenseItems.length > 0) {
+          setExpenses(expenseItems);
+        }
       }
-      if (typeof savedState.managementPercent === 'number') {
+
+      if (typeof savedState?.managementPercent === 'number') {
         setManagementPercent(savedState.managementPercent);
       }
-      if (savedState.purchaseInputs) {
+
+      if (savedState?.purchaseInputs) {
         setPurchaseInputs(savedState.purchaseInputs);
+      } else {
+        setPurchaseInputs({
+          purchasePrice: data.purchase_price ?? DEFAULT_PURCHASE_INPUTS.purchasePrice,
+          closingCosts: data.closing_costs ?? DEFAULT_PURCHASE_INPUTS.closingCosts,
+          downPaymentPercent: data.down_payment_percent ?? DEFAULT_PURCHASE_INPUTS.downPaymentPercent,
+          interestRate: data.interest_rate ?? DEFAULT_PURCHASE_INPUTS.interestRate,
+          loanTermYears: data.loan_term_years ?? DEFAULT_PURCHASE_INPUTS.loanTermYears,
+        });
       }
-      if (savedState.irrInputs) {
+
+      if (savedState?.irrInputs) {
         setIrrInputs(savedState.irrInputs);
       }
-      if (savedState.proformaInputs) {
+
+      if (savedState?.proformaInputs) {
         setProformaInputs(savedState.proformaInputs);
       }
-      if (typeof savedState.useActualIncome === 'boolean') {
+
+      if (typeof savedState?.useActualIncome === 'boolean') {
         setUseActualIncome(savedState.useActualIncome);
       }
-      if (typeof savedState.actualIncome === 'number') {
+
+      if (typeof savedState?.actualIncome === 'number') {
         setActualIncome(savedState.actualIncome);
       }
 
       setSelectedUnits([]);
-      setReportName(data.report_name || savedState.reportName || reportName || 'Mobile Home Park Report');
-      setActiveTab(savedState.activeTab || 'rent-roll');
+      setReportName(
+        savedState?.reportName
+          || data.report_name
+          || data.park_name
+          || reportName
+          || 'Mobile Home Park Report'
+      );
+      setActiveTab(savedState?.activeTab || 'rent-roll');
       alert('Report loaded successfully.');
     } catch (err) {
       console.error('Unexpected error loading report:', err);

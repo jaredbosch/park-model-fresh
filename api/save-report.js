@@ -12,6 +12,17 @@ const supabase =
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
+const OPTIONAL_COLUMNS = new Set([
+  'report_name',
+  'report_state',
+  'management_percent',
+  'irr_inputs',
+  'proforma_inputs',
+  'use_actual_income',
+  'actual_income',
+  'embedding',
+]);
+
 const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
@@ -76,7 +87,8 @@ export default async function handler(req, res) {
       economic_occupancy: payload.propertyInfo?.economicOccupancy ?? payload.calculations?.economicOccupancy,
       gross_potential_rent: payload.calculations?.grossPotentialRent,
       lot_rent_income: payload.calculations?.lotRentIncome,
-      other_income: payload.calculations?.totalAdditionalIncome,
+      other_income:
+        payload.calculations?.totalAdditionalIncome ?? payload.calculations?.otherIncome,
       effective_gross_income: payload.calculations?.effectiveGrossIncome,
       total_operating_expenses: payload.calculations?.totalOpEx,
       management_fee: payload.calculations?.managementFee,
@@ -95,11 +107,6 @@ export default async function handler(req, res) {
       income_items: payload.additionalIncome || [],
       expense_items: payload.expenses || [],
       additional_income: payload.additionalIncome || [],
-      management_percent: payload.managementPercent,
-      irr_inputs: payload.irrInputs,
-      proforma_inputs: payload.proformaInputs,
-      use_actual_income: payload.useActualIncome,
-      actual_income: payload.actualIncome,
       embedding,
     };
 
@@ -108,19 +115,47 @@ export default async function handler(req, res) {
       Object.entries(fieldMap).filter(([_, v]) => v !== undefined && v !== null && v !== '')
     );
 
-    let query = supabase.from('reports');
+    const performPersistence = async (dataToPersist) => {
+      if (payload.reportId) {
+        return supabase
+          .from('reports')
+          .update(dataToPersist)
+          .eq('id', payload.reportId)
+          .eq('user_id', payload.userId)
+          .select();
+      }
+
+      return supabase.from('reports').insert([dataToPersist]).select();
+    };
 
     let data;
     let error;
+    let dataToPersist = { ...insertData };
 
-    if (payload.reportId) {
-      ({ data, error } = await query
-        .update(insertData)
-        .eq('id', payload.reportId)
-        .eq('user_id', payload.userId)
-        .select());
-    } else {
-      ({ data, error } = await query.insert([insertData]).select());
+    for (let attempt = 0; attempt < OPTIONAL_COLUMNS.size + 1; attempt += 1) {
+      ({ data, error } = await performPersistence(dataToPersist));
+
+      if (!error) {
+        break;
+      }
+
+      const missingColumnMatch = error.message?.match(/column "([^"]+)"/i);
+      const missingColumn = missingColumnMatch?.[1];
+
+      if (error.code !== '42703' || !missingColumn || !OPTIONAL_COLUMNS.has(missingColumn)) {
+        break;
+      }
+
+      if (!(missingColumn in dataToPersist)) {
+        break;
+      }
+
+      console.warn(
+        `Column "${missingColumn}" is not present in Supabase. Retrying save without it.`
+      );
+
+      const { [missingColumn]: _removed, ...rest } = dataToPersist;
+      dataToPersist = rest;
     }
 
     if (error) {
