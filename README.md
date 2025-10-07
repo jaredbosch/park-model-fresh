@@ -87,6 +87,21 @@ npm run build
 
 The output lives in `build/`. Push your branch and open a PR to trigger a Vercel preview deployment. You can test the Supabase-powered flows in the preview URL once the environment variables are set in the Vercel dashboard.
 
+## Deploying to Vercel
+
+Once you are satisfied with your changes locally:
+
+1. Commit the changes to your git branch.
+2. Push the branch to GitHub (or your connected Git provider). For example:
+
+   ```bash
+   git push origin <branch-name>
+   ```
+
+3. Vercel automatically detects the push, builds the project, and publishes a new deployment for that branch. You can monitor the progress from the Vercel dashboard or the Git provider's pull request view.
+
+If you are merging to the production branch (commonly `main`), Vercel will promote the resulting deployment to your production URL once the build succeeds.
+
 ## Troubleshooting
 
 - **Supabase not configured:** The UI will warn you if `REACT_APP_SUPABASE_URL` or `REACT_APP_SUPABASE_ANON_KEY` are missing. Ensure they are present in `.env.local` before running locally or configure them in Vercel > Project Settings > Environment Variables.
