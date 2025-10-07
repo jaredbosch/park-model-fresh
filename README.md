@@ -46,7 +46,32 @@ With `RESEND_API_KEY` and `RESEND_FROM_EMAIL` configured the `/api/save-report` 
 
 ## Supabase database setup
 
-Create a `reports` table that can store the generated HTML along with any of the optional metadata you want to persist. The API works best when the table includes a `report_html` column, but it will still persist the structured JSON state even if that field is absent (a warning will be logged and returned to the client). The following SQL creates a compatible schema you can paste into the Supabase SQL editor:
+Create a `reports` table that can store the generated HTML along with any of the optional metadata you want to persist. The API works best when the table includes a `report_html` column, but it will still persist the structured JSON state even if that field is absent (a warning will be logged and returned to the client).
+
+At a minimum you should provision the following columns so that authentication-linked saves keep working:
+
+| Column | Type | Purpose |
+| --- | --- | --- |
+| `id` | `bigint` (identity) | Primary key used when updating an existing report |
+| `user_id` | `uuid` | Links a report back to the authenticated Supabase user |
+| `report_name` | `text` | Stores the friendly label shown in the saved-reports list |
+| `report_state` | `jsonb` | Persists the full underwriting form so the report can be reloaded |
+| `report_html` | `text` | Holds the rendered HTML that can be emailed or downloaded |
+| `created_at` / `updated_at` | `timestamptz` | Timestamps used for sorting and audit trails |
+
+If you started with an older schema that only tracked financial metrics, run the following SQL in the Supabase SQL editor to add the missing columns without disturbing existing data:
+
+```sql
+alter table public.reports
+  add column if not exists user_id uuid references auth.users (id),
+  add column if not exists report_name text,
+  add column if not exists report_state jsonb,
+  add column if not exists report_html text,
+  add column if not exists created_at timestamptz default timezone('utc'::text, now()) not null,
+  add column if not exists updated_at timestamptz default timezone('utc'::text, now()) not null;
+```
+
+Once those fundamentals are in place you can add any of the optional analytics columns you want to persist. The full schema below creates a fully featured table that mirrors every field the UI knows how to store. Paste it into the Supabase SQL editor if you are setting things up from scratch:
 
 ```sql
 create table if not exists public.reports (
