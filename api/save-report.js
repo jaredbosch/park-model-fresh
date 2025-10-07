@@ -146,8 +146,18 @@ export default async function handler(req, res) {
         break;
       }
 
-      const missingColumnMatch = error.message?.match(/column "([^"]+)"/i);
-      const missingColumn = missingColumnMatch?.[1];
+      const columnFromMessage =
+        error.message?.match(/column\s+"?([^"\s]+)"?/i) ||
+        error.message?.match(/column\s+'?([^'\s]+)'?/i) ||
+        error.details?.match(/column\s+"?([^"\s]+)"?/i) ||
+        error.details?.match(/column\s+'?([^'\s]+)'?/i);
+
+      let missingColumn = columnFromMessage?.[1];
+
+      if (missingColumn?.includes('.')) {
+        const parts = missingColumn.split('.');
+        missingColumn = parts[parts.length - 1];
+      }
 
       if (
         error.code !== '42703' ||
