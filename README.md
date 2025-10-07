@@ -22,7 +22,9 @@ The app is deployed as a static React site and uses the `api/save-report.js` ser
 | Vercel function | `SUPABASE_URL` | Supabase project URL |
 | Vercel function | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (keep private) |
 | Vercel function | `OPENAI_API_KEY` | Optional, required to generate embeddings when saving reports |
-| Vercel function | `RESEND_API_KEY` | Optional, required to send notification emails on new reports |
+| Vercel function | `RESEND_API_KEY` | Optional, required to send notification emails when reports are saved |
+| Vercel function | `RESEND_FROM_EMAIL` | Optional, verified sender address for Resend notification emails |
+| Vercel function | `REPORT_NOTIFICATION_EMAILS` | Optional, comma-separated list of email recipients notified on save |
 
 Create two `.env` files:
 
@@ -37,6 +39,10 @@ cp .env.server.example .env  # create this file if it doesn't exist
 Populate them with the variables from the table above. For CRA, any variables that need to be exposed to the browser must be prefixed with `REACT_APP_`.
 
 > **Security note:** Never commit `.env*` files. Vercel manages environment variables securely via the dashboard or CLI.
+
+### Email notifications
+
+With `RESEND_API_KEY` and `RESEND_FROM_EMAIL` configured the `/api/save-report` function emails a copy of every saved or updated report. Recipients come from the optional `REPORT_NOTIFICATION_EMAILS` list (comma-separated) and the report contact's email address when available. Leave these values blank to disable email delivery while still allowing Supabase persistence.
 
 ## Local development
 

@@ -6,22 +6,23 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const resendApiKey = process.env.RESEND_API_KEY;
+const resendFromEmail = process.env.RESEND_FROM_EMAIL || '';
+const notificationEmailList = process.env.REPORT_NOTIFICATION_EMAILS || '';
 
 const supabase =
   supabaseUrl && supabaseServiceRoleKey
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
-const OPTIONAL_COLUMNS = new Set([
-  'report_name',
-  'report_state',
-  'management_percent',
-  'irr_inputs',
-  'proforma_inputs',
-  'use_actual_income',
-  'actual_income',
-  'embedding',
-]);
+const REQUIRED_COLUMNS = new Set(['user_id', 'report_html']);
+
+const parseEmailList = (value) =>
+  value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+const staticNotificationEmails = parseEmailList(notificationEmailList);
 
 const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
@@ -115,6 +116,10 @@ export default async function handler(req, res) {
       Object.entries(fieldMap).filter(([_, v]) => v !== undefined && v !== null && v !== '')
     );
 
+    const optionalColumns = new Set(
+      Object.keys(insertData).filter((column) => !REQUIRED_COLUMNS.has(column))
+    );
+
     const performPersistence = async (dataToPersist) => {
       if (payload.reportId) {
         return supabase
@@ -132,7 +137,9 @@ export default async function handler(req, res) {
     let error;
     let dataToPersist = { ...insertData };
 
-    for (let attempt = 0; attempt < OPTIONAL_COLUMNS.size + 1; attempt += 1) {
+    const droppedColumns = [];
+
+    for (let attempt = 0; attempt < optionalColumns.size + 1; attempt += 1) {
       ({ data, error } = await performPersistence(dataToPersist));
 
       if (!error) {
@@ -142,11 +149,12 @@ export default async function handler(req, res) {
       const missingColumnMatch = error.message?.match(/column "([^"]+)"/i);
       const missingColumn = missingColumnMatch?.[1];
 
-      if (error.code !== '42703' || !missingColumn || !OPTIONAL_COLUMNS.has(missingColumn)) {
-        break;
-      }
-
-      if (!(missingColumn in dataToPersist)) {
+      if (
+        error.code !== '42703' ||
+        !missingColumn ||
+        !optionalColumns.has(missingColumn) ||
+        !Object.prototype.hasOwnProperty.call(dataToPersist, missingColumn)
+      ) {
         break;
       }
 
@@ -156,6 +164,8 @@ export default async function handler(req, res) {
 
       const { [missingColumn]: _removed, ...rest } = dataToPersist;
       dataToPersist = rest;
+      optionalColumns.delete(missingColumn);
+      droppedColumns.push(missingColumn);
     }
 
     if (error) {
@@ -163,17 +173,48 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: error.message });
     }
 
-    if (!payload.reportId && resend) {
-      await resend.emails.send({
-        from: 'onboarding@resend.dev',
-        to: 'boschtj@gmail.com',
-        subject: `New Report Saved: ${payload.reportName || payload.propertyInfo?.name || 'Unknown Property'}`,
-        html:
-          payload.htmlContent ||
-          `<p>New report saved for ${payload.reportName || payload.propertyInfo?.name || 'Unknown Property'}</p>`,
-      });
-    } else if (!payload.reportId && !resend) {
+    if (droppedColumns.length > 0) {
+      console.warn(
+        `Saved report without unsupported columns: ${droppedColumns.sort().join(', ')}`
+      );
+    }
+
+    const notificationRecipients = new Set(staticNotificationEmails);
+
+    if (payload.contactInfo?.email) {
+      notificationRecipients.add(payload.contactInfo.email);
+    }
+
+    const recipientList = Array.from(notificationRecipients);
+    const shouldSendNotification = resend && recipientList.length > 0;
+
+    if (shouldSendNotification) {
+      if (!resendFromEmail) {
+        console.warn(
+          'RESEND_FROM_EMAIL is not set. Skipping notification email even though recipients are available.'
+        );
+      } else {
+        const subjectPrefix = payload.reportId ? 'Updated Report' : 'New Report Saved';
+        const reportLabel =
+          payload.reportName || payload.propertyInfo?.name || 'Mobile Home Park Report';
+
+        try {
+          await resend.emails.send({
+            from: resendFromEmail,
+            to: recipientList,
+            subject: `${subjectPrefix}: ${reportLabel}`,
+            html:
+              payload.htmlContent ||
+              `<p>${subjectPrefix} for ${reportLabel}</p>`,
+          });
+        } catch (emailError) {
+          console.error('Failed to send notification email via Resend:', emailError);
+        }
+      }
+    } else if (!resend) {
       console.warn('RESEND_API_KEY is not set. Notification email will not be sent.');
+    } else if (recipientList.length === 0) {
+      console.warn('No notification recipients configured. Skipping email send.');
     }
 
     return res.status(200).json({ success: true, data });
