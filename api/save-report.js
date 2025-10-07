@@ -220,14 +220,32 @@ async function handler(req, res) {
       Object.keys(insertData).filter((column) => !REQUIRED_COLUMNS.has(column))
     );
 
+    const sanitizeColumnName = (rawColumn) => {
+      if (!rawColumn) {
+        return rawColumn;
+      }
+
+      const withoutTable = rawColumn.includes('.')
+        ? rawColumn.split('.').pop()
+        : rawColumn;
+
+      return withoutTable.replace(/["'`]/g, '');
+    };
+
+    let skipUserIdFilter = false;
+
     const performPersistence = async (dataToPersist) => {
       if (payload.reportId) {
-        return supabase
+        let query = supabase
           .from('reports')
           .update(dataToPersist)
-          .eq('id', payload.reportId)
-          .eq('user_id', payload.userId)
-          .select();
+          .eq('id', payload.reportId);
+
+        if (!skipUserIdFilter) {
+          query = query.eq('user_id', payload.userId);
+        }
+
+        return query.select();
       }
 
       return supabase.from('reports').insert([dataToPersist]).select();
@@ -252,30 +270,40 @@ async function handler(req, res) {
         error.details?.match(/column\s+"?([^"\s]+)"?/i) ||
         error.details?.match(/column\s+'?([^'\s]+)'?/i);
 
-      let missingColumn = columnFromMessage?.[1];
+      const missingColumn = sanitizeColumnName(columnFromMessage?.[1]);
 
-      if (missingColumn?.includes('.')) {
-        const parts = missingColumn.split('.');
-        missingColumn = parts[parts.length - 1];
-      }
-
-      if (
-        error.code !== '42703' ||
-        !missingColumn ||
-        !optionalColumns.has(missingColumn) ||
-        !Object.prototype.hasOwnProperty.call(dataToPersist, missingColumn)
-      ) {
+      if (error.code !== '42703' || !missingColumn) {
         break;
       }
 
-      console.warn(
-        `Column "${missingColumn}" is not present in Supabase. Retrying save without it.`
-      );
+      let handled = false;
 
-      const { [missingColumn]: _removed, ...rest } = dataToPersist;
-      dataToPersist = rest;
-      optionalColumns.delete(missingColumn);
-      droppedColumns.push(missingColumn);
+      if (missingColumn === 'user_id' && payload.reportId && !skipUserIdFilter) {
+        console.warn(
+          'Supabase reports table is missing the optional column "user_id". Retrying update without that filter.'
+        );
+        skipUserIdFilter = true;
+        handled = true;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(dataToPersist, missingColumn)) {
+        console.warn(
+          `Column "${missingColumn}" is not present in Supabase. Retrying save without it.`
+        );
+        const { [missingColumn]: _removed, ...rest } = dataToPersist;
+        dataToPersist = rest;
+        optionalColumns.delete(missingColumn);
+        droppedColumns.push(missingColumn);
+        handled = true;
+      } else {
+        optionalColumns.delete(missingColumn);
+      }
+
+      if (handled) {
+        continue;
+      }
+
+      break;
     }
 
     if (error) {
