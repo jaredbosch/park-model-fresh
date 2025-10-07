@@ -1,12 +1,53 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Download } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
+import supabase, { isSupabaseConfigured } from './supabaseClient';
+import AuthModal from './components/AuthModal';
 
-//const supabase = createClient(
-//  process.env.REACT_APP_SUPABASE_URL,
-//  process.env.REACT_APP_SUPABASE_ANON_KEY
-;
+const DEFAULT_PROPERTY_INFO = {
+  name: 'Mobile Home Park',
+  address: '',
+  city: '',
+  state: ''
+};
+
+const DEFAULT_CONTACT_INFO = {
+  name: '',
+  email: '',
+  phone: '',
+  company: ''
+};
+
+const DEFAULT_PURCHASE_INPUTS = {
+  purchasePrice: 850000,
+  closingCosts: 25000,
+  downPaymentPercent: 25,
+  interestRate: 6.5,
+  loanTermYears: 25
+};
+
+const DEFAULT_IRR_INPUTS = {
+  holdPeriod: 5,
+  exitCapRate: 7.5
+};
+
+const DEFAULT_PROFORMA_INPUTS = {
+  year1NewLeases: 7,
+  year2NewLeases: 5,
+  year3NewLeases: 5,
+  year4NewLeases: 5,
+  year5NewLeases: 5,
+  annualRentIncrease: 3,
+  annualExpenseIncrease: 2.5
+};
 const MobileHomeParkModel = () => {
+  const [session, setSession] = useState(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [savedReports, setSavedReports] = useState([]);
+  const [selectedReportId, setSelectedReportId] = useState('');
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [loadingReportId, setLoadingReportId] = useState(null);
+  const [reportName, setReportName] = useState('Mobile Home Park Report');
+
   const [activeTab, setActiveTab] = useState('rent-roll');
   
   // Rent Roll Inputs
@@ -27,19 +68,9 @@ const MobileHomeParkModel = () => {
   const [selectedUnits, setSelectedUnits] = useState([]);
 
   // Property Information
-  const [propertyInfo, setPropertyInfo] = useState({
-    name: 'Mobile Home Park',
-    address: '',
-    city: '',
-    state: ''
-  });
+  const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
   // Contact info for saving reports (ensure defined to avoid runtime ReferenceError)
-  const [contactInfo, setContactInfo] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    company: ''
-  });
+  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
   const [savingReport, setSavingReport] = useState(false);
   
   // Additional Income Inputs
@@ -66,30 +97,205 @@ const MobileHomeParkModel = () => {
   const [managementPercent, setManagementPercent] = useState(5);
   
   // Purchase & Financing Inputs
-  const [purchaseInputs, setPurchaseInputs] = useState({
-    purchasePrice: 850000,
-    closingCosts: 25000,
-    downPaymentPercent: 25,
-    interestRate: 6.5,
-    loanTermYears: 25
-  });
+  const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
 
   // IRR Inputs
-  const [irrInputs, setIrrInputs] = useState({
-    holdPeriod: 5,
-    exitCapRate: 7.5
-  });
+  const [irrInputs, setIrrInputs] = useState(() => ({ ...DEFAULT_IRR_INPUTS }));
 
   // Proforma Inputs
-  const [proformaInputs, setProformaInputs] = useState({
-    year1NewLeases: 7,
-    year2NewLeases: 5,
-    year3NewLeases: 5,
-    year4NewLeases: 5,
-    year5NewLeases: 5,
-    annualRentIncrease: 3,
-    annualExpenseIncrease: 2.5
-  });
+  const [proformaInputs, setProformaInputs] = useState(() => ({ ...DEFAULT_PROFORMA_INPUTS }));
+
+  const fetchSavedReports = useCallback(async (userId) => {
+    if (!isSupabaseConfigured || !supabase || !userId) {
+      return;
+    }
+
+    setLoadingReports(true);
+    try {
+      const { data, error } = await supabase
+        .from('reports')
+        .select('id, report_name, park_name, created_at, updated_at')
+        .eq('user_id', userId)
+        .order('updated_at', { ascending: false })
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching saved reports:', error);
+        return;
+      }
+
+      setSavedReports(data || []);
+    } catch (err) {
+      console.error('Unexpected error fetching saved reports:', err);
+    } finally {
+      setLoadingReports(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      setSession(null);
+      return;
+    }
+
+    let subscription;
+
+    const initialiseSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        setSession(data?.session || null);
+        const userId = data?.session?.user?.id;
+        if (userId) {
+          fetchSavedReports(userId);
+        }
+      } catch (err) {
+        console.error('Error initialising Supabase session:', err);
+      }
+    };
+
+    initialiseSession();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      const userId = newSession?.user?.id;
+
+      if (userId) {
+        fetchSavedReports(userId);
+        setAuthModalOpen(false);
+      } else {
+        setSavedReports([]);
+        setSelectedReportId('');
+      }
+    });
+
+    subscription = listener?.subscription;
+
+    return () => {
+      subscription?.unsubscribe?.();
+    };
+  }, [fetchSavedReports]);
+
+  useEffect(() => {
+    if (!propertyInfo.name) {
+      return;
+    }
+
+    if (reportName === '' || reportName === 'Mobile Home Park Report') {
+      setReportName(propertyInfo.name);
+    }
+  }, [propertyInfo.name, reportName]);
+
+  const handleRefreshReports = useCallback(() => {
+    if (session?.user?.id) {
+      fetchSavedReports(session.user.id);
+    }
+  }, [fetchSavedReports, session]);
+
+  const handleSignOut = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      return;
+    }
+
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error('Error signing out of Supabase:', err);
+    } finally {
+      setSession(null);
+      setSavedReports([]);
+      setSelectedReportId('');
+      setReportName('Mobile Home Park Report');
+    }
+  }, []);
+
+  const handleLoadReport = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      alert('Supabase is not configured. Please add your Supabase credentials to enable loading reports.');
+      return;
+    }
+
+    if (!session?.user?.id) {
+      setAuthModalOpen(true);
+      return;
+    }
+
+    if (!selectedReportId) {
+      alert('Select a saved report to load.');
+      return;
+    }
+
+    setLoadingReportId(selectedReportId);
+
+    try {
+      const { data, error } = await supabase
+        .from('reports')
+        .select('id, report_state, report_name')
+        .eq('id', selectedReportId)
+        .eq('user_id', session.user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error loading saved report:', error);
+        alert('Unable to load the selected report.');
+        return;
+      }
+
+      if (!data) {
+        alert('Report not found.');
+        return;
+      }
+
+      const savedState = data.report_state || {};
+
+      if (savedState.units) {
+        setUnits(savedState.units);
+      }
+      if (savedState.propertyInfo) {
+        setPropertyInfo(savedState.propertyInfo);
+      } else {
+        setPropertyInfo({ ...DEFAULT_PROPERTY_INFO });
+      }
+      if (savedState.contactInfo) {
+        setContactInfo(savedState.contactInfo);
+      } else {
+        setContactInfo({ ...DEFAULT_CONTACT_INFO });
+      }
+      if (Array.isArray(savedState.additionalIncome)) {
+        setAdditionalIncome(savedState.additionalIncome);
+      }
+      if (Array.isArray(savedState.expenses)) {
+        setExpenses(savedState.expenses);
+      }
+      if (typeof savedState.managementPercent === 'number') {
+        setManagementPercent(savedState.managementPercent);
+      }
+      if (savedState.purchaseInputs) {
+        setPurchaseInputs(savedState.purchaseInputs);
+      }
+      if (savedState.irrInputs) {
+        setIrrInputs(savedState.irrInputs);
+      }
+      if (savedState.proformaInputs) {
+        setProformaInputs(savedState.proformaInputs);
+      }
+      if (typeof savedState.useActualIncome === 'boolean') {
+        setUseActualIncome(savedState.useActualIncome);
+      }
+      if (typeof savedState.actualIncome === 'number') {
+        setActualIncome(savedState.actualIncome);
+      }
+
+      setSelectedUnits([]);
+      setReportName(data.report_name || savedState.reportName || reportName || 'Mobile Home Park Report');
+      setActiveTab(savedState.activeTab || 'rent-roll');
+      alert('Report loaded successfully.');
+    } catch (err) {
+      console.error('Unexpected error loading report:', err);
+      alert('Unable to load the selected report.');
+    } finally {
+      setLoadingReportId(null);
+    }
+  }, [reportName, selectedReportId, session]);
 
   // Add/Remove units
   const addUnit = () => {
@@ -420,11 +626,13 @@ const MobileHomeParkModel = () => {
     return `${value.toFixed(2)}%`;
   };
 
-  const downloadReport = async () => {
+  const buildReportHtml = () => {
     const reportContent = document.getElementById('report');
-    if (!reportContent) return;
+    if (!reportContent) {
+      return null;
+    }
 
-    const htmlContent = `
+    return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -521,6 +729,145 @@ const MobileHomeParkModel = () => {
 ${reportContent.innerHTML}
 </body>
 </html>`;
+  };
+
+  const saveReportToAccount = useCallback(async ({ htmlContent, showAlert = true } = {}) => {
+    if (!isSupabaseConfigured || !supabase) {
+      alert('Supabase is not configured. Please add your Supabase credentials to enable saving reports.');
+      return false;
+    }
+
+    if (!session?.user?.id) {
+      setAuthModalOpen(true);
+      return false;
+    }
+
+    const finalHtml = htmlContent || buildReportHtml();
+    if (!finalHtml) {
+      alert('Unable to capture the report content for saving.');
+      return false;
+    }
+
+    const effectiveReportName = (reportName && reportName.trim()) || propertyInfo.name || 'Untitled Report';
+    const normalizedReportId = selectedReportId ? Number(selectedReportId) : null;
+
+    const propertyDetails = {
+      ...propertyInfo,
+      totalLots: calculations.totalUnits,
+      occupiedLots: calculations.occupiedUnits,
+      physicalOccupancy: calculations.physicalOccupancy,
+      economicOccupancy: calculations.economicOccupancy,
+    };
+
+    const purchaseDetails = {
+      ...purchaseInputs,
+      totalInvestment: calculations.totalInvestment,
+      downPaymentAmount: calculations.downPayment,
+      loanAmount: calculations.loanAmount,
+      monthlyPayment: calculations.monthlyPayment,
+      annualDebtService: calculations.annualDebtService,
+    };
+
+    const reportState = {
+      units,
+      propertyInfo,
+      contactInfo,
+      additionalIncome,
+      expenses,
+      managementPercent,
+      purchaseInputs,
+      irrInputs,
+      proformaInputs,
+      useActualIncome,
+      actualIncome,
+      reportName: effectiveReportName,
+      activeTab,
+      calculations,
+    };
+
+    setSavingReport(true);
+
+    try {
+      const apiBase = process.env.REACT_APP_API_BASE || '';
+      const response = await fetch(`${apiBase}/api/save-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contactInfo,
+          propertyInfo: propertyDetails,
+          purchaseInputs: purchaseDetails,
+          calculations,
+          units,
+          additionalIncome,
+          expenses,
+          managementPercent,
+          irrInputs,
+          proformaInputs,
+          useActualIncome,
+          actualIncome,
+          htmlContent: finalHtml,
+          userId: session.user.id,
+          reportId: normalizedReportId,
+          reportName: effectiveReportName,
+          reportState,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        console.error('Save failed:', result);
+        alert('Failed to save the report to your account.');
+        return false;
+      }
+
+      const savedRow = Array.isArray(result.data) ? result.data[0] : result.data;
+
+      if (savedRow?.id) {
+        setSelectedReportId(String(savedRow.id));
+        setReportName(savedRow.report_name || effectiveReportName);
+      }
+
+      await fetchSavedReports(session.user.id);
+
+      if (showAlert) {
+        alert('Report saved to your account.');
+      }
+
+      return true;
+    } catch (err) {
+      console.error('Error saving report:', err);
+      alert('Failed to save the report to your account.');
+      return false;
+    } finally {
+      setSavingReport(false);
+    }
+  }, [
+    session,
+    reportName,
+    propertyInfo,
+    calculations,
+    purchaseInputs,
+    units,
+    contactInfo,
+    additionalIncome,
+    expenses,
+    managementPercent,
+    irrInputs,
+    proformaInputs,
+    useActualIncome,
+    actualIncome,
+    activeTab,
+    selectedReportId,
+    fetchSavedReports,
+  ]);
+
+  const downloadReport = async () => {
+    const htmlContent = buildReportHtml();
+    if (!htmlContent) {
+      alert('Unable to capture report content for download.');
+      return;
+    }
 
     const blob = new Blob([htmlContent], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -533,48 +880,79 @@ ${reportContent.innerHTML}
     // Delay revoking the object URL to avoid some browsers cancelling the download
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
- // ✅ AFTER: call the API route instead
-try {
-  setSavingReport(true);
-// Build API base from env or fallback
-const apiBase = process.env.REACT_APP_API_BASE || "";
-
-const resp = await fetch(`${apiBase}/api/save-report`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    contactInfo,
-    propertyInfo,
-    purchaseInputs,
-    calculations,
-    units,
-    additionalIncome,
-    expenses,
-    htmlContent
-  })
-});
-
-  const result = await resp.json();
-
-  if (!resp.ok || !result.success) {
-    console.error("Save failed:", result);
-    alert("Report downloaded, but failed to save to database.");
-  } else {
-    console.log("Saved report ID:", result.id);
-    alert("Report downloaded and saved to database (with embedding)!");
-  }
-} catch (err) {
-  console.error("Error saving report:", err);
-  alert("Report downloaded locally only.");
-} finally {
-  setSavingReport(false);
-}
-
-
+    if (session?.user?.id) {
+      await saveReportToAccount({ htmlContent, showAlert: false });
+    }
   };
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-4">
+        <div className="flex flex-wrap items-center gap-3">
+          {session?.user ? (
+            <>
+              <label className="text-sm font-semibold text-gray-700">Saved reports</label>
+              <select
+                className="rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                value={selectedReportId}
+                onChange={(e) => setSelectedReportId(e.target.value)}
+              >
+                <option value="">Select a report</option>
+                {savedReports.map((report) => (
+                  <option key={report.id} value={report.id}>
+                    {report.report_name || report.park_name || `Report #${report.id}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleLoadReport}
+                disabled={!selectedReportId || loadingReportId === selectedReportId}
+                className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
+              >
+                {loadingReportId === selectedReportId ? 'Loading…' : 'Load'}
+              </button>
+              <button
+                onClick={handleRefreshReports}
+                disabled={loadingReports}
+                className="rounded border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+              >
+                {loadingReports ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </>
+          ) : (
+            <p className="text-sm text-gray-600">
+              {isSupabaseConfigured
+                ? 'Sign in to save and load reports from your account.'
+                : 'Add Supabase credentials to enable authentication and saved reports.'}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {session?.user ? (
+            <>
+              <span className="text-sm text-gray-700">
+                Signed in as <span className="font-semibold">{session.user.email}</span>
+              </span>
+              <button
+                onClick={handleSignOut}
+                className="rounded border border-gray-400 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100"
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            isSupabaseConfigured && (
+              <button
+                onClick={() => setAuthModalOpen(true)}
+                className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                Sign in / Create account
+              </button>
+            )
+          )}
+        </div>
+      </div>
+
       <div className="bg-white rounded-lg shadow-lg">
         {/* Header */}
         <div className="border-b border-gray-200 bg-gradient-to-r from-blue-600 to-blue-700 text-white p-6 rounded-t-lg">
@@ -1562,8 +1940,8 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
 
           {activeTab === 'report' && (
             <div className="bg-white">
-              <div className="flex items-center justify-between mb-4 print:hidden">
-                <div className="flex items-center space-x-3">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mb-4 print:hidden">
+                <div className="flex flex-wrap items-center gap-3">
                   <input
                     type="text"
                     placeholder="Name"
@@ -1592,8 +1970,33 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                     onChange={(e) => setContactInfo({...contactInfo, phone: e.target.value})}
                     className="p-2 border border-gray-300 rounded bg-white text-sm w-36"
                   />
+                  <input
+                    type="text"
+                    placeholder="Report name"
+                    value={reportName}
+                    onChange={(e) => setReportName(e.target.value)}
+                    className="p-2 border border-gray-300 rounded bg-white text-sm w-48"
+                  />
                 </div>
-                <div>
+                <div className="flex flex-wrap items-center gap-3 justify-end">
+                  {session?.user ? (
+                    <button
+                      onClick={() => saveReportToAccount({ showAlert: true })}
+                      className="rounded border border-blue-600 px-6 py-2 font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                      disabled={savingReport}
+                    >
+                      {savingReport ? 'Saving…' : selectedReportId ? 'Save Changes' : 'Save to Account'}
+                    </button>
+                  ) : (
+                    isSupabaseConfigured && (
+                      <button
+                        onClick={() => setAuthModalOpen(true)}
+                        className="rounded border border-blue-400 px-6 py-2 font-semibold text-blue-600 transition hover:bg-blue-50"
+                      >
+                        Sign in to save
+                      </button>
+                    )
+                  )}
                   <button
                     onClick={downloadReport}
                     className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition-colors flex items-center space-x-2"
@@ -1889,6 +2292,24 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
           )}
         </div>
       </div>
+
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onAuthSuccess={async () => {
+          if (isSupabaseConfigured && supabase) {
+            try {
+              const { data } = await supabase.auth.getSession();
+              const userId = data?.session?.user?.id;
+              if (userId) {
+                fetchSavedReports(userId);
+              }
+            } catch (err) {
+              console.error('Error refreshing saved reports after sign-in:', err);
+            }
+          }
+        }}
+      />
 
       <style>{`
         @media print {
