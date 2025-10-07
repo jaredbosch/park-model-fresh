@@ -2,16 +2,19 @@ import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { Resend } from 'resend';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const openaiApiKey = process.env.OPENAI_API_KEY;
+const resendApiKey = process.env.RESEND_API_KEY;
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const supabase =
+  supabaseUrl && supabaseServiceRoleKey
+    ? createClient(supabaseUrl, supabaseServiceRoleKey)
+    : null;
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
+
+const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -21,6 +24,11 @@ export default async function handler(req, res) {
   try {
     const payload = req.body || {};
 
+    if (!supabase) {
+      console.error('Missing Supabase credentials.');
+      return res.status(500).json({ success: false, error: 'Supabase is not configured on the server.' });
+    }
+
     if (!payload.userId) {
       return res.status(400).json({ success: false, error: 'User ID is required to save a report.' });
     }
@@ -29,12 +37,14 @@ export default async function handler(req, res) {
     const textToEmbed = `${payload.propertyInfo?.name || ''}, ${payload.propertyInfo?.state || ''}\n${payload.htmlContent || ''}`;
 
     let embedding = null;
-    if (textToEmbed.trim()) {
+    if (textToEmbed.trim() && openai) {
       const embeddingResp = await openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: textToEmbed,
       });
       embedding = embeddingResp.data[0].embedding;
+    } else if (textToEmbed.trim() && !openai) {
+      console.warn('OPENAI_API_KEY is not set. Embeddings will be skipped.');
     }
 
     // Map payload → Supabase schema
@@ -118,7 +128,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: error.message });
     }
 
-    if (!payload.reportId) {
+    if (!payload.reportId && resend) {
       await resend.emails.send({
         from: 'onboarding@resend.dev',
         to: 'boschtj@gmail.com',
@@ -127,6 +137,8 @@ export default async function handler(req, res) {
           payload.htmlContent ||
           `<p>New report saved for ${payload.reportName || payload.propertyInfo?.name || 'Unknown Property'}</p>`,
       });
+    } else if (!payload.reportId && !resend) {
+      console.warn('RESEND_API_KEY is not set. Notification email will not be sent.');
     }
 
     return res.status(200).json({ success: true, data });

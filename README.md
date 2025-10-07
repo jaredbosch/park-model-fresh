@@ -1,70 +1,95 @@
-# Getting Started with Create React App
+# Mobile Home Park Model
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This project is a Create React App that models the operations of a mobile home park. It now includes Supabase-backed authentication and persistence so users can sign in, save their underwriting reports, and reload them later.
 
-## Available Scripts
+The app is deployed as a static React site and uses the `api/save-report.js` serverless function when running on Vercel.
 
-In the project directory, you can run:
+## Prerequisites
 
-### `npm start`
+- Node.js 18+
+- npm 9+
+- A Supabase project (Database + Authentication enabled)
+- Optional: Resend account for notification emails
+- Optional: OpenAI account for text embeddings
+- [Vercel CLI](https://vercel.com/docs/cli) if you plan to preview locally with the Vercel runtime
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## Environment variables
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+| Location | Variable | Description |
+| --- | --- | --- |
+| React app | `REACT_APP_SUPABASE_URL` | Supabase project URL |
+| React app | `REACT_APP_SUPABASE_ANON_KEY` | Supabase anon/public API key |
+| Vercel function | `SUPABASE_URL` | Supabase project URL |
+| Vercel function | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (keep private) |
+| Vercel function | `OPENAI_API_KEY` | Optional, required to generate embeddings when saving reports |
+| Vercel function | `RESEND_API_KEY` | Optional, required to send notification emails on new reports |
 
-### `npm test`
+Create two `.env` files:
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+```bash
+# React app runtime
+cp .env.example .env.local   # create this file if it doesn't exist
 
-### `npm run build`
+# Vercel serverless runtime
+cp .env.server.example .env  # create this file if it doesn't exist
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+Populate them with the variables from the table above. For CRA, any variables that need to be exposed to the browser must be prefixed with `REACT_APP_`.
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+> **Security note:** Never commit `.env*` files. Vercel manages environment variables securely via the dashboard or CLI.
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+## Local development
 
-### `npm run eject`
+Install dependencies and start the CRA development server:
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+```bash
+npm install
+npm start
+```
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+The app will be available at [http://localhost:3000](http://localhost:3000). Authentication and report saving will function locally as long as the Supabase environment variables are set.
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## Local testing with the Vercel runtime
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+To simulate production behaviour (including the `/api/save-report` function) install the Vercel CLI and run:
 
-## Learn More
+```bash
+npm install
+npm run build
+vercel dev
+```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+`vercel dev` reads environment variables from `.env`, `.env.local`, `.env.development.local`, etc. You can sync variables from your Vercel project with:
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+```bash
+vercel login
+vercel link
+vercel env pull .env.local
+```
 
-### Code Splitting
+Then restart `vercel dev` so both the React app and the API route run under the same environment.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+## Running tests
 
-### Analyzing the Bundle Size
+```bash
+npm test
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+This launches the CRA test runner in watch mode.
 
-### Making a Progressive Web App
+## Production build
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+Build the static React bundle that Vercel will serve:
 
-### Advanced Configuration
+```bash
+npm run build
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+The output lives in `build/`. Push your branch and open a PR to trigger a Vercel preview deployment. You can test the Supabase-powered flows in the preview URL once the environment variables are set in the Vercel dashboard.
 
-### Deployment
+## Troubleshooting
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+- **Supabase not configured:** The UI will warn you if `REACT_APP_SUPABASE_URL` or `REACT_APP_SUPABASE_ANON_KEY` are missing. Ensure they are present in `.env.local` before running locally or configure them in Vercel > Project Settings > Environment Variables.
+- **Report saves fail:** Check the serverless logs (`vercel logs <deployment-url>`) to confirm the `SUPABASE_SERVICE_ROLE_KEY` is available. The API now surfaces a descriptive error when the credentials are missing.
+- **Emails/embeddings skipped:** The serverless function logs warnings if `RESEND_API_KEY` or `OPENAI_API_KEY` are not defined. These features are optional.
 
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
