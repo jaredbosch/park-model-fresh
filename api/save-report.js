@@ -14,7 +14,7 @@ const supabase =
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
-const REQUIRED_COLUMNS = new Set();
+const REQUIRED_COLUMNS = new Set(['user_id', 'report_name', 'report_state']);
 
 let cachedReportsSchemaStatus = {
   ok: false,
@@ -40,7 +40,7 @@ const ensureReportsSchema = async () => {
     return cachedReportsSchemaStatus;
   }
 
-  const columnsToProbe = ['id', 'report_html'];
+  const columnsToProbe = ['id', ...REQUIRED_COLUMNS, 'report_html'];
 
   const { error } = await supabase
     .from('reports')
@@ -229,7 +229,7 @@ async function handler(req, res) {
         ? rawColumn.split('.').pop()
         : rawColumn;
 
-      return withoutTable.replace(/["'`]/g, '');
+      return withoutTable.replace(/["'`]/g, '').replace(/-/g, '_');
     };
 
     let skipUserIdFilter = false;
@@ -280,7 +280,7 @@ async function handler(req, res) {
 
       if (missingColumn === 'user_id' && payload.reportId && !skipUserIdFilter) {
         console.warn(
-          'Supabase reports table is missing the optional column "user_id". Retrying update without that filter.'
+          'Supabase reports table is missing the "user_id" column used for ownership filtering. Retrying update without that filter.'
         );
         skipUserIdFilter = true;
         handled = true;
