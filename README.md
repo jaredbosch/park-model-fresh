@@ -72,6 +72,20 @@ alter table public.reports
   add column if not exists updated_at timestamptz default timezone('utc'::text, now()) not null;
 ```
 
+### Manual updates via the Supabase dashboard
+
+Prefer using the Supabase UI? You can add the same columns from **Table editor → reports**:
+
+1. Click **+ New column** and create the following fields (nullable unless specified):
+   - `user_id` (`uuid`) — reference `auth.users(id)`
+   - `report_name` (`text`)
+   - `report_state` (`jsonb`)
+   - `report_html` (`text`, optional but recommended)
+   - `created_at` / `updated_at` (`timestamptz`, default to `now()`)
+2. Save the changes and reload the underwriting app before trying again.
+
+The API will fall back to legacy compatibility mode if `user_id` or `report_name` are missing, but saves will no longer be scoped to each Supabase account. Add the columns above when possible so every user sees only their own reports and the saved-report list keeps its friendly names.
+
 ### Automated schema helper (Supabase MCP server)
 
 If you would rather update the schema from your local environment, the repository includes a lightweight Model Context Protocol helper that talks directly to your Supabase Postgres instance. Provide the connection string in `.env`:

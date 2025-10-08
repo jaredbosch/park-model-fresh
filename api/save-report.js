@@ -14,7 +14,21 @@ const supabase =
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
-const REQUIRED_COLUMNS = new Set(['user_id', 'report_name', 'report_state']);
+const sanitizeColumnName = (rawColumn) => {
+  if (!rawColumn) {
+    return rawColumn;
+  }
+
+  const withoutTable = rawColumn.includes('.')
+    ? rawColumn.split('.').pop()
+    : rawColumn;
+
+  return withoutTable.replace(/["'`]/g, '').replace(/-/g, '_');
+};
+
+const REQUIRED_COLUMNS = new Set(['report_state']);
+const RECOMMENDED_COLUMNS = new Set(['user_id', 'report_name']);
+const OPTIONAL_PROBE_COLUMNS = new Set(['report_html']);
 
 let cachedReportsSchemaStatus = {
   ok: false,
@@ -40,45 +54,84 @@ const ensureReportsSchema = async () => {
     return cachedReportsSchemaStatus;
   }
 
-  const columnsToProbe = ['id', ...REQUIRED_COLUMNS, 'report_html'];
+  const columnsToCheck = new Set([
+    'id',
+    ...REQUIRED_COLUMNS,
+    ...RECOMMENDED_COLUMNS,
+    ...OPTIONAL_PROBE_COLUMNS,
+  ]);
 
-  const { error } = await supabase
-    .from('reports')
-    .select(columnsToProbe.join(', '), { head: true, count: 'exact' });
+  const missingRecommended = new Set();
+  const missingOptional = new Set();
 
-  if (error) {
+  while (columnsToCheck.size > 0) {
+    const { error } = await supabase
+      .from('reports')
+      .select(Array.from(columnsToCheck).join(', '), { head: true, count: 'exact' });
+
+    if (!error) {
+      break;
+    }
+
+    if (error.code === '42P01') {
+      cachedReportsSchemaStatus = {
+        ok: false,
+        checkedAt: now,
+        error: {
+          message: "Supabase table 'reports' is missing. Create the table before saving reports.",
+          code: error.code,
+          details: error.details,
+          hint: error.hint,
+        },
+        warning: null,
+      };
+
+      return cachedReportsSchemaStatus;
+    }
+
     const missingColumnMatch =
       error.message?.match(/column\s+"?([^"\s]+)"?/i) ||
       error.message?.match(/column\s+'?([^'\s]+)'?/i) ||
       error.details?.match(/column\s+"?([^"\s]+)"?/i) ||
       error.details?.match(/column\s+'?([^'\s]+)'?/i);
 
-    const missingColumn = missingColumnMatch?.[1];
+    const missingColumn = sanitizeColumnName(missingColumnMatch?.[1]);
 
-    if (error.code === '42703' && missingColumn === 'report_html') {
-      cachedReportsSchemaStatus = {
-        ok: true,
-        checkedAt: now,
-        error: null,
-        warning:
-          "Supabase 'reports' table is missing the optional column \"report_html\". The raw HTML will not be stored until the column is added.",
-      };
+    if (error.code === '42703' && missingColumn) {
+      if (REQUIRED_COLUMNS.has(missingColumn)) {
+        cachedReportsSchemaStatus = {
+          ok: false,
+          checkedAt: now,
+          error: {
+            message: `Supabase 'reports' table is missing the required column "${missingColumn}".`,
+            code: error.code,
+            details: error.details,
+            hint: error.hint,
+          },
+          warning: null,
+        };
 
-      return cachedReportsSchemaStatus;
+        return cachedReportsSchemaStatus;
+      }
+
+      if (columnsToCheck.has(missingColumn)) {
+        columnsToCheck.delete(missingColumn);
+
+        if (RECOMMENDED_COLUMNS.has(missingColumn)) {
+          missingRecommended.add(missingColumn);
+        } else {
+          missingOptional.add(missingColumn);
+        }
+
+        continue;
+      }
     }
-
-    const errorMessage =
-      error.code === '42P01'
-        ? "Supabase table 'reports' is missing. Create the table before saving reports."
-        : missingColumn
-        ? `Supabase 'reports' table is missing the required column "${missingColumn}".`
-        : 'Unable to access the Supabase reports table. Check the table name and columns.';
 
     cachedReportsSchemaStatus = {
       ok: false,
       checkedAt: now,
       error: {
-        message: errorMessage,
+        message: 'Unable to access the Supabase reports table. Check the table name and columns.',
         code: error.code,
         details: error.details,
         hint: error.hint,
@@ -89,7 +142,28 @@ const ensureReportsSchema = async () => {
     return cachedReportsSchemaStatus;
   }
 
-  cachedReportsSchemaStatus = { ok: true, checkedAt: now, error: null, warning: null };
+  const warnings = [];
+
+  if (missingRecommended.size > 0) {
+    warnings.push(
+      `Supabase 'reports' table is missing recommended columns: ${Array.from(missingRecommended)
+        .sort()
+        .join(', ')}. The app will fall back to legacy mode, but add these columns to scope saves per-user.`
+    );
+  }
+
+  if (missingOptional.has('report_html')) {
+    warnings.push(
+      "Supabase 'reports' table is missing the optional column \"report_html\". The raw HTML will not be stored until the column is added."
+    );
+  }
+
+  cachedReportsSchemaStatus = {
+    ok: true,
+    checkedAt: now,
+    error: null,
+    warning: warnings.length > 0 ? warnings.join(' ') : null,
+  };
   return cachedReportsSchemaStatus;
 };
 
@@ -219,18 +293,6 @@ async function handler(req, res) {
     const optionalColumns = new Set(
       Object.keys(insertData).filter((column) => !REQUIRED_COLUMNS.has(column))
     );
-
-    const sanitizeColumnName = (rawColumn) => {
-      if (!rawColumn) {
-        return rawColumn;
-      }
-
-      const withoutTable = rawColumn.includes('.')
-        ? rawColumn.split('.').pop()
-        : rawColumn;
-
-      return withoutTable.replace(/["'`]/g, '').replace(/-/g, '_');
-    };
 
     let skipUserIdFilter = false;
 
