@@ -26,9 +26,9 @@ const sanitizeColumnName = (rawColumn) => {
   return withoutTable.replace(/["'`]/g, '').replace(/-/g, '_');
 };
 
-const REQUIRED_COLUMNS = new Set();
-const RECOMMENDED_COLUMNS = new Set(['user_id', 'report_name', 'report_state']);
-const OPTIONAL_PROBE_COLUMNS = new Set(['report_html']);
+const REQUIRED_COLUMNS = new Set(['user_id', 'report_name', 'report_state']);
+const RECOMMENDED_COLUMNS = new Set(['report_html']);
+const OPTIONAL_PROBE_COLUMNS = new Set();
 
 let cachedReportsSchemaStatus = {
   ok: false,
@@ -158,29 +158,19 @@ const ensureReportsSchema = async () => {
 
   if (missingRecommended.size > 0) {
     const recommendedList = Array.from(missingRecommended).sort();
-    const baseWarning =
-      `Supabase 'reports' table is missing recommended columns: ${recommendedList.join(', ')}. The app will fall back to legacy mode, but add these columns to restore full functionality.`;
-
-    const extras = [];
-
-    if (missingRecommended.has('user_id')) {
-      extras.push('Without "user_id" the app cannot scope saves per-user.');
-    }
-
-    if (missingRecommended.has('report_name')) {
-      extras.push('Without "report_name" the report picker will show generic names.');
-    }
-
-    if (missingRecommended.has('report_state')) {
-      extras.push('Without "report_state" only summary numbers will be stored and advanced inputs will reset on load.');
-    }
-
-    warnings.push([baseWarning, ...extras].join(' '));
+    warnings.push(
+      `Supabase 'reports' table is missing optional columns: ${recommendedList.join(
+        ', '
+      )}. Data will still save, but those fields will be omitted until the columns are added.`
+    );
   }
 
-  if (missingOptional.has('report_html')) {
+  if (missingOptional.size > 0) {
+    const optionalList = Array.from(missingOptional).sort();
     warnings.push(
-      "Supabase 'reports' table is missing the optional column \"report_html\". The raw HTML will not be stored until the column is added."
+      `Supabase 'reports' table is missing probe-only columns: ${optionalList.join(
+        ', '
+      )}.`
     );
   }
 
