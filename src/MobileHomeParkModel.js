@@ -50,6 +50,23 @@ const MobileHomeParkModel = () => {
 
   const [activeTab, setActiveTab] = useState('rent-roll');
 
+  const formatReportDate = useCallback((value) => {
+    if (!value) {
+      return '';
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+
+    return date.toLocaleDateString('en-US', {
+      month: '2-digit',
+      day: '2-digit',
+      year: 'numeric',
+    });
+  }, []);
+
   const sessionEmail = useMemo(
     () =>
       session?.user?.email ||
@@ -344,6 +361,28 @@ const MobileHomeParkModel = () => {
     fetchSavedReportsRef.current();
   }, [sessionUserId]);
 
+  const savedReportCount = savedReports.length;
+
+  useEffect(() => {
+    if (activeTab !== 'my-reports') {
+      return;
+    }
+
+    if (!sessionUserId) {
+      return;
+    }
+
+    if (loadingReports) {
+      return;
+    }
+
+    if (savedReportCount > 0) {
+      return;
+    }
+
+    fetchSavedReportsRef.current();
+  }, [activeTab, sessionUserId, loadingReports, savedReportCount]);
+
   useEffect(() => {
     if (!propertyInfo.name) {
       return;
@@ -355,10 +394,12 @@ const MobileHomeParkModel = () => {
   }, [propertyInfo.name, reportName]);
 
   const handleRefreshReports = useCallback(() => {
-    if (session?.user?.id) {
-      fetchSavedReports();
+    if (!session?.user?.id) {
+      return;
     }
-  }, [fetchSavedReports, session]);
+
+    fetchSavedReportsRef.current();
+  }, [session]);
 
   const handleSignOut = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -373,11 +414,12 @@ const MobileHomeParkModel = () => {
       setSession(null);
       setSavedReports([]);
       setSelectedReportId('');
+      setLoadingReportId(null);
       setReportName('Mobile Home Park Report');
     }
   }, []);
 
-  const handleLoadReport = useCallback(async () => {
+  const loadReport = useCallback(async (report) => {
     if (!isSupabaseConfigured || !supabase) {
       alert('Supabase is not configured. Please add your Supabase credentials to enable loading reports.');
       return;
@@ -388,12 +430,16 @@ const MobileHomeParkModel = () => {
       return;
     }
 
-    if (!selectedReportId) {
-      alert('Select a saved report to load.');
+    const resolvedReportId =
+      (report && typeof report === 'object' ? report.id : report) || null;
+
+    if (!resolvedReportId) {
+      alert('Unable to load the selected report.');
       return;
     }
 
-    setLoadingReportId(selectedReportId);
+    const reportIdString = String(resolvedReportId);
+    setLoadingReportId(reportIdString);
 
     try {
       const strategies = [];
@@ -422,7 +468,7 @@ const MobileHomeParkModel = () => {
           let query = supabase
             .from('reports')
             .select('*')
-            .eq('id', selectedReportId)
+            .eq('id', resolvedReportId)
             .limit(1);
 
           query = strategy.apply(query);
@@ -564,6 +610,7 @@ const MobileHomeParkModel = () => {
       }
 
       setSelectedUnits([]);
+      setSelectedReportId(reportIdString);
       setReportName(
         savedState?.reportName
           || data.report_name
@@ -579,7 +626,7 @@ const MobileHomeParkModel = () => {
     } finally {
       setLoadingReportId(null);
     }
-  }, [reportName, selectedReportId, session, sessionEmail]);
+  }, [reportName, session, sessionEmail]);
 
   // Add/Remove units
   const addUnit = () => {
@@ -1214,39 +1261,20 @@ ${reportContent.innerHTML}
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-4">
         <div className="flex flex-wrap items-center gap-3">
           {session?.user ? (
-            <>
-              <label className="text-sm font-semibold text-gray-700">Saved reports</label>
-              <select
-                className="rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                value={selectedReportId}
-                onChange={(e) => setSelectedReportId(e.target.value)}
-              >
-                <option value="">Select a report</option>
-                {savedReports.map((report) => (
-                  <option key={report.id} value={report.id}>
-                    {report.report_name || report.park_name || `Report #${report.id}`}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap items-center gap-3 text-sm text-gray-700">
+              <span>Manage saved reports from the My Reports tab.</span>
               <button
-                onClick={handleLoadReport}
-                disabled={!selectedReportId || loadingReportId === selectedReportId}
-                className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
+                type="button"
+                onClick={() => setActiveTab('my-reports')}
+                className="font-semibold text-blue-600 hover:text-blue-700 transition"
               >
-                {loadingReportId === selectedReportId ? 'Loading…' : 'Load'}
+                Go to My Reports
               </button>
-              <button
-                onClick={handleRefreshReports}
-                disabled={loadingReports}
-                className="rounded border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
-              >
-                {loadingReports ? 'Refreshing…' : 'Refresh'}
-              </button>
-            </>
+            </div>
           ) : (
             <p className="text-sm text-gray-600">
               {isSupabaseConfigured
-                ? 'Sign in to save and load reports from your account.'
+                ? 'Sign in to save and load reports from the My Reports tab.'
                 : 'Add Supabase credentials to enable authentication and saved reports.'}
             </p>
           )}
@@ -1338,7 +1366,7 @@ ${reportContent.innerHTML}
         {/* Tabs */}
         <div className="border-b border-gray-200 bg-gray-50">
           <div className="flex space-x-1 p-2">
-            {['rent-roll', 'pnl', 'proforma', 'returns', 'report'].map((tab) => (
+            {['my-reports', 'rent-roll', 'pnl', 'proforma', 'returns', 'report'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -1348,6 +1376,7 @@ ${reportContent.innerHTML}
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
               >
+                {tab === 'my-reports' && 'My Reports'}
                 {tab === 'rent-roll' && 'Rent Roll'}
                 {tab === 'pnl' && 'P&L Statement'}
                 {tab === 'proforma' && '5-Year Proforma'}
@@ -1360,6 +1389,76 @@ ${reportContent.innerHTML}
 
         {/* Content */}
         <div className="p-6">
+          {activeTab === 'my-reports' && (
+            <div className="space-y-6">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-800">My Reports</h2>
+                  <p className="text-sm text-gray-600">
+                    Select a saved report to load it back into the model.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRefreshReports}
+                  disabled={!session?.user?.id || loadingReports}
+                  className="rounded border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                >
+                  {loadingReports ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+
+              {!session?.user ? (
+                <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">
+                  {isSupabaseConfigured
+                    ? 'Sign in to view and load reports saved to your account.'
+                    : 'Add Supabase credentials to enable authentication and saved reports.'}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
+                  {loadingReports ? (
+                    <div className="p-6 text-sm text-gray-600">Loading saved reports…</div>
+                  ) : savedReports.length === 0 ? (
+                    <div className="p-6 text-sm text-gray-600">No reports saved yet.</div>
+                  ) : (
+                    <ul className="divide-y divide-gray-200">
+                      {savedReports.map((report) => {
+                        const reportIdString = String(report.id);
+                        const formattedDate =
+                          formatReportDate(report.created_at || report.updated_at);
+                        const isLoading = loadingReportId === reportIdString;
+                        const isSelected = selectedReportId && selectedReportId === reportIdString;
+
+                        return (
+                          <li key={report.id}>
+                            <button
+                              type="button"
+                              onClick={() => loadReport(report)}
+                              className={`w-full px-4 py-3 text-left transition-colors flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between ${
+                                isSelected
+                                  ? 'bg-blue-50 text-blue-700'
+                                  : 'hover:bg-gray-50 text-gray-800'
+                              } ${isLoading ? 'cursor-wait opacity-75' : ''}`}
+                            >
+                              <span className="font-semibold">
+                                {report.report_name || report.park_name || 'Untitled Report'}
+                              </span>
+                              <span className={`text-sm ${isSelected ? 'text-blue-600' : 'text-gray-500'}`}>
+                                {isLoading
+                                  ? 'Loading…'
+                                  : formattedDate || '—'}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'rent-roll' && (
             <div className="space-y-6">
               <div className="flex justify-between items-center">
