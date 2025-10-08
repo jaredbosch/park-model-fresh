@@ -304,46 +304,6 @@ const MobileHomeParkModel = () => {
     [quickPopulateRows]
   );
 
-  const quickPopulatePreview = useMemo(() => {
-    const summary = quickPopulateRows.reduce(
-      (acc, row) => {
-        const lots = parseInt(row.numberOfLots, 10);
-        if (!Number.isFinite(lots) || lots <= 0) {
-          return acc;
-        }
-
-        const rent = parseFloat(row.rentAmount);
-        const monthlyRent = Number.isFinite(rent) && rent > 0 ? rent : 0;
-        const occupied = row.occupancyStatus === 'occupied';
-
-        acc.totalLots += lots;
-        acc.totalRent += monthlyRent * lots;
-
-        if (occupied) {
-          acc.occupiedLots += lots;
-          acc.totalRentIncome += monthlyRent * lots;
-        }
-
-        return acc;
-      },
-      {
-        totalLots: 0,
-        occupiedLots: 0,
-        totalRent: 0,
-        totalRentIncome: 0,
-      }
-    );
-    return {
-      ...summary,
-      averageRent: summary.totalLots > 0 ? summary.totalRent / summary.totalLots : 0,
-    };
-  }, [quickPopulateRows]);
-
-  const parsedVacantTarget = useMemo(() => {
-    const target = parseInt(vacantTargetLots, 10);
-    return Number.isFinite(target) ? target : null;
-  }, [vacantTargetLots]);
-  
   // Rent Roll Inputs
   const [units, setUnits] = useState(() => {
     const initialUnits = [];
@@ -360,6 +320,58 @@ const MobileHomeParkModel = () => {
   });
 
   const [selectedUnits, setSelectedUnits] = useState([]);
+
+  const quickPopulatePreview = useMemo(() => {
+    if (!Array.isArray(units) || units.length === 0) {
+      return {
+        totalLots: 0,
+        occupiedLots: 0,
+        averageRent: 0,
+        totalRentIncome: 0,
+      };
+    }
+
+    let occupiedLots = 0;
+    let occupiedRentSum = 0;
+    const occupiedRentValues = [];
+
+    units.forEach((unit) => {
+      if (!unit) {
+        return;
+      }
+
+      const rentValue = Number(unit.rent);
+
+      if (unit.occupied) {
+        occupiedLots += 1;
+
+        if (Number.isFinite(rentValue) && rentValue > 0) {
+          occupiedRentValues.push(rentValue);
+          occupiedRentSum += rentValue;
+        } else if (Number.isFinite(rentValue)) {
+          occupiedRentSum += Math.max(rentValue, 0);
+        }
+      }
+    });
+
+    const averageRent =
+      occupiedRentValues.length > 0
+        ? occupiedRentValues.reduce((sum, value) => sum + value, 0) /
+          occupiedRentValues.length
+        : 0;
+
+    return {
+      totalLots: units.length,
+      occupiedLots,
+      averageRent,
+      totalRentIncome: occupiedRentSum * 12,
+    };
+  }, [units]);
+
+  const parsedVacantTarget = useMemo(() => {
+    const target = parseInt(vacantTargetLots, 10);
+    return Number.isFinite(target) ? target : null;
+  }, [vacantTargetLots]);
   const canVacantRemaining = parsedVacantTarget !== null && parsedVacantTarget > units.length;
 
   // Property Information
@@ -1028,28 +1040,70 @@ const MobileHomeParkModel = () => {
       return;
     }
 
-    let nextId = 1;
-    let nextLotNumber = 1;
-    const generatedUnits = [];
+    let appendedCount = 0;
+    let resultingLength = null;
 
-    groups.forEach((group) => {
-      for (let i = 0; i < group.lots; i++) {
-        generatedUnits.push({
-          id: nextId,
-          lotNumber: `${nextLotNumber}`,
-          tenant: group.occupied ? 'Occupied' : 'Vacant',
-          rent: group.rent,
-          occupied: group.occupied,
-        });
-        nextId += 1;
-        nextLotNumber += 1;
+    setUnits((prevUnits) => {
+      let highestLotNumber = 0;
+      let maxId = 0;
+
+      prevUnits.forEach((unit) => {
+        if (!unit) {
+          return;
+        }
+
+        const numericLot = parseInt(unit.lotNumber, 10);
+        if (Number.isFinite(numericLot) && numericLot > highestLotNumber) {
+          highestLotNumber = numericLot;
+        }
+
+        const numericId =
+          typeof unit.id === 'number'
+            ? unit.id
+            : parseInt(String(unit.id), 10);
+
+        if (Number.isFinite(numericId) && numericId > maxId) {
+          maxId = numericId;
+        }
+      });
+
+      if (!Number.isFinite(highestLotNumber) || highestLotNumber < prevUnits.length) {
+        highestLotNumber = prevUnits.length;
       }
+
+      let nextId = maxId > 0 ? maxId + 1 : 1;
+      const generatedUnits = [];
+
+      groups.forEach((group) => {
+        for (let i = 0; i < group.lots; i += 1) {
+          highestLotNumber += 1;
+          generatedUnits.push({
+            id: nextId,
+            lotNumber: `${highestLotNumber}`,
+            tenant: group.occupied ? 'Occupied' : 'Vacant',
+            rent: group.rent,
+            occupied: group.occupied,
+          });
+          nextId += 1;
+        }
+      });
+
+      appendedCount = generatedUnits.length;
+
+      if (appendedCount === 0) {
+        resultingLength = prevUnits.length;
+        return prevUnits;
+      }
+
+      const updatedUnits = [...prevUnits, ...generatedUnits];
+      resultingLength = updatedUnits.length;
+      return updatedUnits;
     });
 
-    setUnits(generatedUnits);
     setSelectedUnits([]);
-    if (generatedUnits.length > 0) {
-      setVacantTargetLots(String(generatedUnits.length));
+
+    if (appendedCount > 0 && Number.isFinite(resultingLength)) {
+      setVacantTargetLots(String(resultingLength));
     }
   }, [quickPopulateRows]);
 
@@ -1057,6 +1111,15 @@ const MobileHomeParkModel = () => {
     setUnits([]);
     setSelectedUnits([]);
     setVacantTargetLots('');
+    setQuickPopulateRows([
+      {
+        id: 1,
+        numberOfLots: '',
+        rentAmount: '',
+        occupancyStatus: 'occupied',
+      },
+    ]);
+    quickPopulateIdRef.current = 2;
   }, []);
 
   const vacantRemainingLots = useCallback(() => {
@@ -1072,38 +1135,55 @@ const MobileHomeParkModel = () => {
       return;
     }
 
-    const existingLotNumbers = units
-      .map((unit) => {
-        const numeric = parseInt(unit.lotNumber, 10);
-        return Number.isFinite(numeric) ? numeric : null;
-      })
-      .filter((value) => value !== null);
+    setUnits((prevUnits) => {
+      let highestLotNumber = 0;
+      let maxId = 0;
 
-    let highestLotNumber = existingLotNumbers.length > 0 ? Math.max(...existingLotNumbers) : 0;
+      prevUnits.forEach((unit) => {
+        if (!unit) {
+          return;
+        }
 
-    if (!Number.isFinite(highestLotNumber) || highestLotNumber < units.length) {
-      highestLotNumber = units.length;
-    }
+        const numericLot = parseInt(unit.lotNumber, 10);
+        if (Number.isFinite(numericLot) && numericLot > highestLotNumber) {
+          highestLotNumber = numericLot;
+        }
 
-    let nextId = Math.max(...units.map((u) => u.id), 0) + 1;
-    const updatedUnits = [...units];
+        const numericId =
+          typeof unit.id === 'number'
+            ? unit.id
+            : parseInt(String(unit.id), 10);
 
-    while (updatedUnits.length < target) {
-      highestLotNumber += 1;
-      updatedUnits.push({
-        id: nextId,
-        lotNumber: `${highestLotNumber}`,
-        tenant: 'Vacant',
-        rent: 0,
-        occupied: false,
+        if (Number.isFinite(numericId) && numericId > maxId) {
+          maxId = numericId;
+        }
       });
-      nextId += 1;
-    }
 
-    setUnits(updatedUnits);
+      if (!Number.isFinite(highestLotNumber) || highestLotNumber < prevUnits.length) {
+        highestLotNumber = prevUnits.length;
+      }
+
+      let nextId = maxId > 0 ? maxId + 1 : 1;
+      const updatedUnits = [...prevUnits];
+
+      while (updatedUnits.length < target) {
+        highestLotNumber += 1;
+        updatedUnits.push({
+          id: nextId,
+          lotNumber: `${highestLotNumber}`,
+          tenant: 'Vacant',
+          rent: 0,
+          occupied: false,
+        });
+        nextId += 1;
+      }
+
+      return updatedUnits;
+    });
+
     setSelectedUnits([]);
     setVacantTargetLots(String(target));
-  }, [units, vacantTargetLots]);
+  }, [units.length, vacantTargetLots]);
 
   // Additional Income Functions
   const addIncomeItem = () => {
