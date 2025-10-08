@@ -82,6 +82,20 @@ Prefer using the Supabase UI? You can add the same columns from **Table editor â
    - `created_at` / `updated_at` (`timestamptz`, default to `now()`)
 2. Save the changes and reload the underwriting app before trying again.
 
+### Enable Row Level Security (RLS)
+
+Turn on RLS for the `reports` table so Supabase enforces per-user access. After enabling it, add a policy that lets each authenticated user read and write only the rows they own:
+
+```sql
+create policy "Users manage their own reports"
+  on public.reports
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+```
+
+The `/api/save-report` Vercel function authenticates with the service role key, which bypasses RLS so saves and updates keep working. On the client we rely on the anon key and the signed-in session, so be sure your policies allow selecting rows where `user_id = auth.uid()`.
+
 ### Automated schema helper (Supabase MCP server)
 
 If you would rather update the schema from your local environment, the repository includes a lightweight Model Context Protocol helper that talks directly to your Supabase Postgres instance. Provide the connection string in `.env`:
