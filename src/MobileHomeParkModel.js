@@ -3,6 +3,119 @@ import { Download } from 'lucide-react';
 import supabase, { isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
 
+const normaliseReportState = (state) => {
+  if (!state) {
+    return null;
+  }
+
+  if (typeof state === 'object') {
+    return state;
+  }
+
+  if (typeof state === 'string') {
+    try {
+      return JSON.parse(state);
+    } catch (err) {
+      console.warn('Unable to parse saved report_state JSON:', err);
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const resolveReportName = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const rawName =
+    state?.reportName ||
+    state?.propertyInfo?.name ||
+    report?.report_name ||
+    report?.park_name ||
+    '';
+
+  const trimmed = typeof rawName === 'string' ? rawName.trim() : '';
+
+  return trimmed || 'Untitled Report';
+};
+
+const resolvePropertyName = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const rawName = state?.propertyInfo?.name || report?.park_name || '';
+  return typeof rawName === 'string' && rawName.trim() ? rawName.trim() : '—';
+};
+
+const resolveCity = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const rawCity = state?.propertyInfo?.city || report?.park_city || '';
+  return typeof rawCity === 'string' ? rawCity.trim() : '';
+};
+
+const resolvePurchasePrice = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const valueCandidates = [
+    report?.purchase_price,
+    state?.purchaseInputs?.purchasePrice,
+  ];
+
+  for (const candidate of valueCandidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+
+    if (typeof candidate === 'string') {
+      const parsed = Number(candidate);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+};
+
+const resolveReportDateValue = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const candidates = [
+    report?.created_at,
+    report?.updated_at,
+    state?.savedAt,
+    state?.createdAt,
+    state?.updatedAt,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const date = new Date(candidate);
+    const timestamp = date.getTime();
+
+    if (!Number.isNaN(timestamp)) {
+      return timestamp;
+    }
+  }
+
+  return null;
+};
+
 const DEFAULT_PROPERTY_INFO = {
   name: 'Mobile Home Park',
   address: '',
@@ -43,6 +156,7 @@ const MobileHomeParkModel = () => {
   const [session, setSession] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [savedReports, setSavedReports] = useState([]);
+  const [reportSort, setReportSort] = useState({ column: 'date', direction: 'desc' });
   const [selectedReportId, setSelectedReportId] = useState('');
   const [loadingReports, setLoadingReports] = useState(false);
   const [loadingReportId, setLoadingReportId] = useState(null);
@@ -64,6 +178,101 @@ const MobileHomeParkModel = () => {
       month: '2-digit',
       day: '2-digit',
       year: 'numeric',
+    });
+  }, []);
+
+  const sortedReports = useMemo(() => {
+    if (!Array.isArray(savedReports)) {
+      return [];
+    }
+
+    const items = [...savedReports];
+
+    const { column, direction } = reportSort;
+    const multiplier = direction === 'asc' ? 1 : -1;
+
+    const compareText = (aValue, bValue) => {
+      const aText = (aValue || '').toString().toLowerCase();
+      const bText = (bValue || '').toString().toLowerCase();
+
+      if (aText === bText) {
+        return 0;
+      }
+
+      return aText > bText ? multiplier : -multiplier;
+    };
+
+    const compareNumber = (aValue, bValue) => {
+      const aNum = Number.isFinite(aValue) ? aValue : null;
+      const bNum = Number.isFinite(bValue) ? bValue : null;
+
+      if (aNum === bNum) {
+        return 0;
+      }
+
+      if (aNum === null) {
+        return multiplier;
+      }
+
+      if (bNum === null) {
+        return -multiplier;
+      }
+
+      return aNum > bNum ? multiplier : -multiplier;
+    };
+
+    const compareDate = (aReport, bReport) => {
+      const aDate = resolveReportDateValue(aReport);
+      const bDate = resolveReportDateValue(bReport);
+
+      if (aDate === bDate) {
+        return 0;
+      }
+
+      if (aDate === null) {
+        return multiplier;
+      }
+
+      if (bDate === null) {
+        return -multiplier;
+      }
+
+      return aDate > bDate ? multiplier : -multiplier;
+    };
+
+    items.sort((aReport, bReport) => {
+      switch (column) {
+        case 'name':
+          return compareText(resolveReportName(aReport), resolveReportName(bReport));
+        case 'city':
+          return compareText(resolveCity(aReport), resolveCity(bReport));
+        case 'price':
+          return compareNumber(
+            resolvePurchasePrice(aReport),
+            resolvePurchasePrice(bReport)
+          );
+        case 'date':
+        default:
+          return compareDate(aReport, bReport);
+      }
+    });
+
+    return items;
+  }, [reportSort, savedReports]);
+
+  const handleReportSort = useCallback((column) => {
+    setReportSort((prev) => {
+      if (prev.column === column) {
+        return {
+          column,
+          direction: prev.direction === 'asc' ? 'desc' : 'asc',
+        };
+      }
+
+      return {
+        column,
+        direction: column === 'date' ? 'desc' : 'asc',
+      };
     });
   }, []);
 
@@ -416,6 +625,7 @@ const MobileHomeParkModel = () => {
       setSelectedReportId('');
       setLoadingReportId(null);
       setReportName('Mobile Home Park Report');
+      setReportSort({ column: 'date', direction: 'desc' });
     }
   }, []);
 
@@ -1363,7 +1573,7 @@ ${reportContent.innerHTML}
         {/* Tabs */}
         <div className="border-b border-gray-200 bg-gray-50">
           <div className="flex space-x-1 p-2">
-            {['my-reports', 'rent-roll', 'pnl', 'proforma', 'returns', 'report'].map((tab) => (
+            {['rent-roll', 'pnl', 'proforma', 'returns', 'report', 'my-reports'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -1415,41 +1625,151 @@ ${reportContent.innerHTML}
                 <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
                   {loadingReports ? (
                     <div className="p-6 text-sm text-gray-600">Loading saved reports…</div>
-                  ) : savedReports.length === 0 ? (
+                  ) : sortedReports.length === 0 ? (
                     <div className="p-6 text-sm text-gray-600">No reports saved yet.</div>
                   ) : (
-                    <ul className="divide-y divide-gray-200">
-                      {savedReports.map((report) => {
-                        const reportIdString = String(report.id);
-                        const formattedDate =
-                          formatReportDate(report.created_at || report.updated_at);
-                        const isLoading = loadingReportId === reportIdString;
-                        const isSelected = selectedReportId && selectedReportId === reportIdString;
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('name')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                Report Name
+                                {reportSort.column === 'name' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              Property Name
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('city')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                City
+                                {reportSort.column === 'city' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('price')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                Purchase Price
+                                {reportSort.column === 'price' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('date')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                Date Created
+                                {reportSort.column === 'date' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {sortedReports.map((report, index) => {
+                            const reportIdString = String(report.id);
+                            const state = normaliseReportState(report.report_state);
+                            const rawDate =
+                              report.created_at ||
+                              report.updated_at ||
+                              state?.savedAt ||
+                              state?.createdAt ||
+                              state?.updatedAt ||
+                              null;
+                            const formattedDate = formatReportDate(rawDate) || '—';
+                            const purchasePriceValue = resolvePurchasePrice(report, state);
+                            const formattedPrice =
+                              typeof purchasePriceValue === 'number'
+                                ? formatCurrency(purchasePriceValue)
+                                : '—';
+                            const isLoading = loadingReportId === reportIdString;
+                            const isSelected = selectedReportId && selectedReportId === reportIdString;
+                            const cityValue = resolveCity(report, state) || '—';
+                            const rowBase = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+                            const rowState = isSelected ? 'bg-blue-50 text-blue-800' : rowBase;
+                            const rowHover = isSelected ? '' : 'hover:bg-blue-50';
+                            const handleSelectReport = () => {
+                              if (isLoading) {
+                                return;
+                              }
 
-                        return (
-                          <li key={report.id}>
-                            <button
-                              type="button"
-                              onClick={() => loadReport(report)}
-                              className={`w-full px-4 py-3 text-left transition-colors flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between ${
-                                isSelected
-                                  ? 'bg-blue-50 text-blue-700'
-                                  : 'hover:bg-gray-50 text-gray-800'
-                              } ${isLoading ? 'cursor-wait opacity-75' : ''}`}
-                            >
-                              <span className="font-semibold">
-                                {report.report_name || report.park_name || 'Untitled Report'}
-                              </span>
-                              <span className={`text-sm ${isSelected ? 'text-blue-600' : 'text-gray-500'}`}>
-                                {isLoading
-                                  ? 'Loading…'
-                                  : formattedDate || '—'}
-                              </span>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                              loadReport(report);
+                            };
+
+                            const handleKeySelect = (event) => {
+                              if (isLoading) {
+                                return;
+                              }
+
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                loadReport(report);
+                              }
+                            };
+
+                            return (
+                              <tr
+                                key={report.id}
+                                onClick={handleSelectReport}
+                                onKeyDown={handleKeySelect}
+                                tabIndex={0}
+                                role="button"
+                                aria-pressed={Boolean(isSelected)}
+                                className={`transition-colors ${rowState} ${rowHover} ${
+                                  isLoading ? 'cursor-wait opacity-75' : 'cursor-pointer'
+                                }`}
+                              >
+                                <td className="px-4 py-3 align-middle">
+                                  <span className="font-semibold text-gray-900">
+                                    {isLoading ? 'Loading…' : resolveReportName(report, state)}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {resolvePropertyName(report, state)}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {cityValue || '—'}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {formattedPrice}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {formattedDate}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
               )}
@@ -2364,7 +2684,7 @@ ${reportContent.innerHTML}
           {activeTab === 'report' && (
             <div className="bg-white">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mb-4 print:hidden">
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-end gap-3">
                   <input
                     type="text"
                     placeholder="Name"
@@ -2393,13 +2713,17 @@ ${reportContent.innerHTML}
                     onChange={(e) => setContactInfo({...contactInfo, phone: e.target.value})}
                     className="p-2 border border-gray-300 rounded bg-white text-sm w-36"
                   />
-                  <input
-                    type="text"
-                    placeholder="Report name"
-                    value={reportName}
-                    onChange={(e) => setReportName(e.target.value)}
-                    className="p-2 border border-gray-300 rounded bg-white text-sm w-48"
-                  />
+                  <div className="flex flex-col w-56">
+                    <label className="text-sm font-semibold text-gray-700 mb-1">Report Name</label>
+                    <input
+                      type="text"
+                      placeholder="Report name"
+                      value={reportName}
+                      onChange={(e) => setReportName(e.target.value)}
+                      className="p-2 border border-gray-300 rounded bg-white text-sm w-full"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Used to identify and save this report.</p>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-3 justify-end">
                   {session?.user ? (
