@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Download } from 'lucide-react';
 import supabase, { isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
@@ -290,6 +290,14 @@ const MobileHomeParkModel = () => {
     [session, sessionEmail]
   );
 
+  const fetchSavedReportsRef = useRef(fetchSavedReports);
+
+  useEffect(() => {
+    fetchSavedReportsRef.current = fetchSavedReports;
+  }, [fetchSavedReports]);
+
+  const sessionUserId = session?.user?.id || null;
+
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
       setSession(null);
@@ -302,9 +310,6 @@ const MobileHomeParkModel = () => {
       try {
         const { data } = await supabase.auth.getSession();
         setSession(data?.session || null);
-        if (data?.session?.user?.id) {
-          fetchSavedReports({ sessionOverride: data.session });
-        }
       } catch (err) {
         console.error('Error initialising Supabase session:', err);
       }
@@ -315,10 +320,9 @@ const MobileHomeParkModel = () => {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
       if (newSession?.user?.id) {
-        fetchSavedReports({ sessionOverride: newSession });
         setAuthModalOpen(false);
       } else {
-        setSavedReports([]);
+        setSavedReports((current) => (current.length > 0 ? [] : current));
         setSelectedReportId('');
       }
     });
@@ -328,7 +332,17 @@ const MobileHomeParkModel = () => {
     return () => {
       subscription?.unsubscribe?.();
     };
-  }, [fetchSavedReports]);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionUserId) {
+      setSavedReports((current) => (current.length > 0 ? [] : current));
+      setSelectedReportId('');
+      return;
+    }
+
+    fetchSavedReportsRef.current();
+  }, [sessionUserId]);
 
   useEffect(() => {
     if (!propertyInfo.name) {
