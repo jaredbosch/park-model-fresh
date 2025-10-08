@@ -161,6 +161,16 @@ const MobileHomeParkModel = () => {
   const [loadingReports, setLoadingReports] = useState(false);
   const [loadingReportId, setLoadingReportId] = useState(null);
   const [reportName, setReportName] = useState('Mobile Home Park Report');
+  const [quickPopulateRows, setQuickPopulateRows] = useState([
+    {
+      id: 1,
+      numberOfLots: '',
+      rentAmount: '',
+      occupancyStatus: 'occupied',
+    },
+  ]);
+  const quickPopulateIdRef = useRef(2);
+  const [vacantTargetLots, setVacantTargetLots] = useState('');
 
   const [activeTab, setActiveTab] = useState('rent-roll');
 
@@ -284,6 +294,55 @@ const MobileHomeParkModel = () => {
       '',
     [session]
   );
+
+  const hasValidQuickPopulateRows = useMemo(
+    () =>
+      quickPopulateRows.some((row) => {
+        const lots = parseInt(row.numberOfLots, 10);
+        return Number.isFinite(lots) && lots > 0;
+      }),
+    [quickPopulateRows]
+  );
+
+  const quickPopulatePreview = useMemo(() => {
+    const summary = quickPopulateRows.reduce(
+      (acc, row) => {
+        const lots = parseInt(row.numberOfLots, 10);
+        if (!Number.isFinite(lots) || lots <= 0) {
+          return acc;
+        }
+
+        const rent = parseFloat(row.rentAmount);
+        const monthlyRent = Number.isFinite(rent) && rent > 0 ? rent : 0;
+        const occupied = row.occupancyStatus === 'occupied';
+
+        acc.totalLots += lots;
+        acc.totalRent += monthlyRent * lots;
+
+        if (occupied) {
+          acc.occupiedLots += lots;
+          acc.totalRentIncome += monthlyRent * lots;
+        }
+
+        return acc;
+      },
+      {
+        totalLots: 0,
+        occupiedLots: 0,
+        totalRent: 0,
+        totalRentIncome: 0,
+      }
+    );
+    return {
+      ...summary,
+      averageRent: summary.totalLots > 0 ? summary.totalRent / summary.totalLots : 0,
+    };
+  }, [quickPopulateRows]);
+
+  const parsedVacantTarget = useMemo(() => {
+    const target = parseInt(vacantTargetLots, 10);
+    return Number.isFinite(target) ? target : null;
+  }, [vacantTargetLots]);
   
   // Rent Roll Inputs
   const [units, setUnits] = useState(() => {
@@ -301,6 +360,7 @@ const MobileHomeParkModel = () => {
   });
 
   const [selectedUnits, setSelectedUnits] = useState([]);
+  const canVacantRemaining = parsedVacantTarget !== null && parsedVacantTarget > units.length;
 
   // Property Information
   const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
@@ -911,11 +971,139 @@ const MobileHomeParkModel = () => {
       alert('Please enter a valid rent amount');
       return;
     }
-    setUnits(units.map(u => 
+    setUnits(units.map(u =>
       selectedUnits.includes(u.id) ? { ...u, rent: rentValue } : u
     ));
     setSelectedUnits([]);
   };
+
+  const addQuickPopulateRow = useCallback(() => {
+    setQuickPopulateRows((prev) => [
+      ...prev,
+      {
+        id: quickPopulateIdRef.current++,
+        numberOfLots: '',
+        rentAmount: '',
+        occupancyStatus: 'occupied',
+      },
+    ]);
+  }, []);
+
+  const updateQuickPopulateRow = useCallback((id, field, value) => {
+    setQuickPopulateRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, [field]: value } : row))
+    );
+  }, []);
+
+  const removeQuickPopulateRow = useCallback((id) => {
+    setQuickPopulateRows((prev) => {
+      if (prev.length === 1) {
+        return prev;
+      }
+
+      return prev.filter((row) => row.id !== id);
+    });
+  }, []);
+
+  const applyQuickPopulate = useCallback(() => {
+    const groups = quickPopulateRows
+      .map((row) => {
+        const lots = parseInt(row.numberOfLots, 10);
+        if (!Number.isFinite(lots) || lots <= 0) {
+          return null;
+        }
+
+        const rentValue = parseFloat(row.rentAmount);
+
+        return {
+          lots,
+          rent: Number.isFinite(rentValue) && rentValue >= 0 ? rentValue : 0,
+          occupied: row.occupancyStatus === 'occupied',
+        };
+      })
+      .filter(Boolean);
+
+    if (groups.length === 0) {
+      alert('Add at least one valid quick populate row before applying.');
+      return;
+    }
+
+    let nextId = 1;
+    let nextLotNumber = 1;
+    const generatedUnits = [];
+
+    groups.forEach((group) => {
+      for (let i = 0; i < group.lots; i++) {
+        generatedUnits.push({
+          id: nextId,
+          lotNumber: `${nextLotNumber}`,
+          tenant: group.occupied ? 'Occupied' : 'Vacant',
+          rent: group.rent,
+          occupied: group.occupied,
+        });
+        nextId += 1;
+        nextLotNumber += 1;
+      }
+    });
+
+    setUnits(generatedUnits);
+    setSelectedUnits([]);
+    if (generatedUnits.length > 0) {
+      setVacantTargetLots(String(generatedUnits.length));
+    }
+  }, [quickPopulateRows]);
+
+  const clearRentRoll = useCallback(() => {
+    setUnits([]);
+    setSelectedUnits([]);
+    setVacantTargetLots('');
+  }, []);
+
+  const vacantRemainingLots = useCallback(() => {
+    const target = parseInt(vacantTargetLots, 10);
+
+    if (!Number.isFinite(target) || target <= 0) {
+      alert('Enter a valid total lot count before filling remaining lots.');
+      return;
+    }
+
+    if (target <= units.length) {
+      alert('Total lots must be greater than the current number of rows.');
+      return;
+    }
+
+    const existingLotNumbers = units
+      .map((unit) => {
+        const numeric = parseInt(unit.lotNumber, 10);
+        return Number.isFinite(numeric) ? numeric : null;
+      })
+      .filter((value) => value !== null);
+
+    let highestLotNumber = existingLotNumbers.length > 0 ? Math.max(...existingLotNumbers) : 0;
+
+    if (!Number.isFinite(highestLotNumber) || highestLotNumber < units.length) {
+      highestLotNumber = units.length;
+    }
+
+    let nextId = Math.max(...units.map((u) => u.id), 0) + 1;
+    const updatedUnits = [...units];
+
+    while (updatedUnits.length < target) {
+      highestLotNumber += 1;
+      updatedUnits.push({
+        id: nextId,
+        lotNumber: `${highestLotNumber}`,
+        tenant: 'Vacant',
+        rent: 0,
+        occupied: false,
+      });
+      nextId += 1;
+    }
+
+    setUnits(updatedUnits);
+    setSelectedUnits([]);
+    setVacantTargetLots(String(target));
+  }, [units, vacantTargetLots]);
 
   // Additional Income Functions
   const addIncomeItem = () => {
@@ -964,10 +1152,10 @@ const MobileHomeParkModel = () => {
     // Rent Roll Metrics
     const totalUnits = units.length;
     const occupiedUnits = units.filter(u => u.occupied).length;
-    const physicalOccupancy = (occupiedUnits / totalUnits) * 100;
+    const physicalOccupancy = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0;
     const grossPotentialRent = units.reduce((sum, u) => sum + Number(u.rent), 0) * 12;
     const rentRollIncome = units.filter(u => u.occupied).reduce((sum, u) => sum + Number(u.rent), 0) * 12;
-    
+
     // Determine which income to use
     const lotRentIncome = useActualIncome ? Number(actualIncome) : rentRollIncome;
     
@@ -977,7 +1165,7 @@ const MobileHomeParkModel = () => {
     // Total Income
     const effectiveGrossIncome = lotRentIncome + totalAdditionalIncome;
     const vacancyLoss = grossPotentialRent - lotRentIncome;
-    const economicOccupancy = (lotRentIncome / grossPotentialRent) * 100;
+    const economicOccupancy = grossPotentialRent > 0 ? (lotRentIncome / grossPotentialRent) * 100 : 0;
 
     // Operating Expenses
     const managementFee = effectiveGrossIncome * (managementPercent / 100);
@@ -1004,9 +1192,9 @@ const MobileHomeParkModel = () => {
     const dscr = noi / annualDebtService;
     
     // Per Unit Metrics
-    const incomePerUnit = effectiveGrossIncome / totalUnits;
-    const expensePerUnit = totalOpEx / totalUnits;
-    const noiPerUnit = noi / totalUnits;
+    const incomePerUnit = totalUnits > 0 ? effectiveGrossIncome / totalUnits : 0;
+    const expensePerUnit = totalUnits > 0 ? totalOpEx / totalUnits : 0;
+    const noiPerUnit = totalUnits > 0 ? noi / totalUnits : 0;
     
     // IRR Calculation
     const holdPeriod = irrInputs.holdPeriod;
@@ -1778,28 +1966,184 @@ ${reportContent.innerHTML}
 
           {activeTab === 'rent-roll' && (
             <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold text-gray-800">Rent Roll</h2>
-                <div className="flex items-center space-x-4">
-                  <div className="flex items-center space-x-2">
-                    <label className="text-sm font-semibold text-gray-700">Add Multiple Lots:</label>
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 shadow-sm">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-blue-900">Quick Populate Rent Roll</h3>
+                    <p className="text-sm text-blue-700">
+                      Define groups of lots to auto-generate sequential entries.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={addQuickPopulateRow}
+                      className="rounded border border-blue-600 px-3 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-100"
+                    >
+                      + Add Row
+                    </button>
+                    <button
+                      type="button"
+                      onClick={applyQuickPopulate}
+                      disabled={!hasValidQuickPopulateRows}
+                      className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {quickPopulateRows.map((row, index) => (
+                    <div
+                      key={row.id}
+                      className="grid grid-cols-1 gap-3 md:grid-cols-7 md:items-end"
+                    >
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-900">
+                          Number of Lots
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={row.numberOfLots}
+                          onChange={(e) => updateQuickPopulateRow(row.id, 'numberOfLots', e.target.value)}
+                          className="w-full rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
+                          placeholder="e.g. 40"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-900">
+                          Rent Amount
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={row.rentAmount}
+                          onChange={(e) => updateQuickPopulateRow(row.id, 'rentAmount', e.target.value)}
+                          className="w-full rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
+                          placeholder="e.g. 475"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-900">
+                          Occupancy
+                        </label>
+                        <select
+                          value={row.occupancyStatus}
+                          onChange={(e) => updateQuickPopulateRow(row.id, 'occupancyStatus', e.target.value)}
+                          className="w-full rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
+                        >
+                          <option value="occupied">Occupied</option>
+                          <option value="vacant">Vacant</option>
+                        </select>
+                      </div>
+                      <div className="flex items-end justify-start md:justify-end">
+                        {quickPopulateRows.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeQuickPopulateRow(row.id)}
+                            className="rounded border border-red-500 px-3 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50"
+                          >
+                            Remove
+                          </button>
+                        )}
+                        {quickPopulateRows.length === 1 && (
+                          <span className="text-xs text-blue-700">
+                            Row {index + 1}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label
+                      htmlFor="vacant-total-lots"
+                      className="text-sm font-semibold text-blue-900"
+                    >
+                      Total Lots Goal
+                    </label>
                     <input
+                      id="vacant-total-lots"
                       type="number"
-                      id="bulkAddInput"
+                      min="0"
+                      value={vacantTargetLots}
+                      onChange={(e) => setVacantTargetLots(e.target.value)}
+                      className="w-28 rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
                       placeholder="e.g. 120"
-                      className="w-24 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold"
-                      onKeyPress={(e) => {
-                        if (e.key === 'Enter') {
-                          const count = parseInt(e.target.value);
-                          if (count > 0 && count <= 500) {
-                            addMultipleUnits(count);
-                            e.target.value = '';
-                          } else {
-                            alert('Please enter a number between 1 and 500');
-                          }
-                        }
-                      }}
                     />
+                    <button
+                      type="button"
+                      onClick={vacantRemainingLots}
+                      disabled={!canVacantRemaining}
+                      className="rounded border border-blue-600 px-3 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-100 disabled:opacity-60"
+                    >
+                      Vacant the Remaining Lots
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={clearRentRoll}
+                      className="rounded border border-red-500 px-3 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50"
+                    >
+                      Clear Rent Roll
+                    </button>
+                  </div>
+                </div>
+
+                {quickPopulatePreview.totalLots > 0 && (
+                  <div className="mt-4 rounded-md border border-blue-200 bg-white p-4">
+                    <div className="text-sm font-semibold text-blue-900">Preview Summary</div>
+                    <div className="mt-2 grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Total Lots</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.totalLots}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Occupied</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.occupiedLots}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Average Rent</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.averageRent || 0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Total Rent Income</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.totalRentIncome || 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <h2 className="text-2xl font-bold text-gray-800">Rent Roll</h2>
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label className="text-xs font-semibold text-gray-700">Add Multiple Lots</label>
+                      <input
+                        type="number"
+                        id="bulkAddInput"
+                        placeholder="e.g. 120"
+                        className="w-24 rounded border border-gray-300 bg-blue-50 p-2 text-sm font-semibold text-blue-900"
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter') {
+                            const count = parseInt(e.target.value);
+                            if (count > 0 && count <= 500) {
+                              addMultipleUnits(count);
+                              e.target.value = '';
+                            } else {
+                              alert('Please enter a number between 1 and 500');
+                            }
+                          }
+                        }}
+                      />
+                    </div>
                     <button
                       onClick={() => {
                         const input = document.getElementById('bulkAddInput');
@@ -1811,14 +2155,14 @@ ${reportContent.innerHTML}
                           alert('Please enter a number between 1 and 500');
                         }
                       }}
-                      className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors text-sm"
+                      className="rounded bg-green-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-green-700"
                     >
                       Add Lots
                     </button>
                   </div>
                   <button
                     onClick={addUnit}
-                    className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors"
+                    className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
                   >
                     + Add Single Lot
                   </button>
