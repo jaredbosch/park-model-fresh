@@ -115,89 +115,168 @@ const MobileHomeParkModel = () => {
   const [proformaInputs, setProformaInputs] = useState(() => ({ ...DEFAULT_PROFORMA_INPUTS }));
 
   const fetchSavedReports = useCallback(
-    async (userId, userEmail) => {
-      if (!isSupabaseConfigured || !supabase || !userId) {
+    async ({ sessionOverride, accessToken, userId } = {}) => {
+      if (!isSupabaseConfigured || !supabase) {
         return;
       }
 
+      const activeSession = sessionOverride || session;
+      const effectiveUserId = userId || activeSession?.user?.id || null;
+      const effectiveAccessToken =
+        accessToken || activeSession?.access_token || null;
+
+      if (!effectiveUserId) {
+        setSavedReports([]);
+        return;
+      }
+
+      const effectiveEmail =
+        activeSession?.user?.email ||
+        activeSession?.user?.user_metadata?.email ||
+        activeSession?.user?.user_metadata?.email_address ||
+        sessionEmail ||
+        '';
+
       setLoadingReports(true);
 
-      const columnVariants = [
-        'id, report_name, park_name, created_at, updated_at, user_id, user_email, report_state',
-        'id, report_name, park_name, created_at, updated_at, user_email, report_state',
-        'id, report_name, park_name, created_at, updated_at, report_state',
-        'id, park_name, created_at, updated_at, report_state',
-        'id, park_name, created_at, updated_at',
-      ];
-
-      const filterStrategies = [];
-
-      if (userId) {
-        filterStrategies.push({
-          label: 'user_id',
-          apply: (query) => query.eq('user_id', userId),
-        });
-      }
-
-      if (userEmail) {
-        filterStrategies.push({
-          label: 'user_email',
-          apply: (query) => query.eq('user_email', userEmail),
-        });
-      }
-
-      filterStrategies.push({
-        label: 'none',
-        apply: (query) => query,
-      });
+      const apiBase = process.env.REACT_APP_API_BASE || '';
 
       try {
+        if (effectiveAccessToken) {
+          try {
+            const response = await fetch(`${apiBase}/api/list-reports`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accessToken: effectiveAccessToken }),
+            });
+
+            let payload = null;
+            try {
+              payload = await response.json();
+            } catch (parseError) {
+              console.error('Unable to parse saved reports response JSON:', parseError);
+            }
+
+            if (response.ok && payload?.success && Array.isArray(payload.data)) {
+              const warnings = Array.isArray(payload?.warnings)
+                ? payload.warnings.filter(Boolean)
+                : [];
+
+              warnings.forEach((warning) =>
+                console.warn('Saved reports retrieved with warning:', warning)
+              );
+
+              setSavedReports(payload.data);
+              return;
+            }
+
+            if (payload?.warnings) {
+              payload.warnings
+                .filter(Boolean)
+                .forEach((warning) =>
+                  console.warn('Saved reports API warning:', warning)
+                );
+            }
+
+            const apiErrorMessage =
+              payload?.error || response.statusText || 'Unknown list reports error';
+            console.warn(
+              'Falling back to direct Supabase query for saved reports:',
+              apiErrorMessage
+            );
+          } catch (apiError) {
+            console.error('Error fetching saved reports via API:', apiError);
+          }
+        }
+
+        const columnVariants = [
+          'id, report_name, park_name, created_at, updated_at, user_id, user_email, report_state',
+          'id, report_name, park_name, created_at, updated_at, user_email, report_state',
+          'id, report_name, park_name, created_at, updated_at, report_state',
+          'id, park_name, created_at, updated_at, report_state',
+          'id, park_name, created_at, updated_at',
+          'id, park_name, created_at',
+        ];
+
+        const filterStrategies = [];
+
+        if (effectiveUserId) {
+          filterStrategies.push({
+            label: 'user_id',
+            apply: (query) => query.eq('user_id', effectiveUserId),
+          });
+        }
+
+        if (effectiveEmail) {
+          filterStrategies.push({
+            label: 'user_email',
+            apply: (query) => query.eq('user_email', effectiveEmail),
+          });
+        }
+
+        filterStrategies.push({
+          label: 'none',
+          apply: (query) => query,
+        });
+
         for (const columns of columnVariants) {
           for (const strategy of filterStrategies) {
-            let query = supabase
-              .from('reports')
-              .select(columns)
-              .order('updated_at', { ascending: false })
-              .order('created_at', { ascending: false });
+            try {
+              let query = supabase
+                .from('reports')
+                .select(columns)
+                .order('updated_at', { ascending: false })
+                .order('created_at', { ascending: false });
 
-            query = strategy.apply(query);
+              query = strategy.apply(query);
 
-            const { data, error } = await query;
+              const { data, error } = await query;
 
-            if (error) {
-              if (error.code === '42703') {
-                console.warn(
-                  `Supabase reports query skipped due to missing column (strategy: ${strategy.label}, columns: ${columns}).`,
-                  error.message || error
-                );
+              if (error) {
+                if (error.code === '42703') {
+                  console.warn(
+                    `Supabase reports query skipped due to missing column (strategy: ${strategy.label}, columns: ${columns}).`,
+                    error.message || error
+                  );
+                  continue;
+                }
+
+                if (error.code === '42501' || /permission denied/i.test(`${error.message} ${error.details}`)) {
+                  console.error(
+                    'Supabase Row Level Security prevented listing saved reports. Ensure select policies allow authenticated users to view their own data.',
+                    error.message || error
+                  );
+                  break;
+                }
+
+                console.error('Error fetching saved reports:', error);
                 continue;
               }
 
-              console.error('Error fetching saved reports:', error);
-              continue;
+              if (!Array.isArray(data)) {
+                continue;
+              }
+
+              let resolvedData = data;
+
+              if (strategy.label === 'none' && effectiveUserId) {
+                resolvedData = data.filter((row) => {
+                  const state = row?.report_state;
+                  const ownerId =
+                    (state && (state.ownerUserId || state.userId || state.sessionUserId)) || null;
+                  return ownerId === effectiveUserId;
+                });
+              }
+
+              if (resolvedData.length === 0 && strategy.label !== 'none') {
+                continue;
+              }
+
+              setSavedReports(resolvedData);
+              return;
+            } catch (strategyError) {
+              console.error('Unexpected error executing Supabase report fetch strategy:', strategyError);
             }
-
-            if (!Array.isArray(data)) {
-              continue;
-            }
-
-            let resolvedData = data;
-
-            if (strategy.label === 'none' && userId) {
-              resolvedData = data.filter((row) => {
-                const state = row?.report_state;
-                const ownerId =
-                  (state && (state.ownerUserId || state.userId || state.sessionUserId)) || null;
-                return ownerId === userId;
-              });
-            }
-
-            if (resolvedData.length === 0 && strategy.label !== 'none') {
-              continue;
-            }
-
-            setSavedReports(resolvedData);
-            return;
           }
         }
 
@@ -208,7 +287,7 @@ const MobileHomeParkModel = () => {
         setLoadingReports(false);
       }
     },
-    []
+    [session, sessionEmail]
   );
 
   useEffect(() => {
@@ -223,14 +302,8 @@ const MobileHomeParkModel = () => {
       try {
         const { data } = await supabase.auth.getSession();
         setSession(data?.session || null);
-        const userId = data?.session?.user?.id;
-        const userEmail =
-          data?.session?.user?.email ||
-          data?.session?.user?.user_metadata?.email ||
-          data?.session?.user?.user_metadata?.email_address ||
-          '';
-        if (userId) {
-          fetchSavedReports(userId, userEmail);
+        if (data?.session?.user?.id) {
+          fetchSavedReports({ sessionOverride: data.session });
         }
       } catch (err) {
         console.error('Error initialising Supabase session:', err);
@@ -241,15 +314,8 @@ const MobileHomeParkModel = () => {
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
-      const userId = newSession?.user?.id;
-      const userEmail =
-        newSession?.user?.email ||
-        newSession?.user?.user_metadata?.email ||
-        newSession?.user?.user_metadata?.email_address ||
-        '';
-
-      if (userId) {
-        fetchSavedReports(userId, userEmail);
+      if (newSession?.user?.id) {
+        fetchSavedReports({ sessionOverride: newSession });
         setAuthModalOpen(false);
       } else {
         setSavedReports([]);
@@ -276,9 +342,9 @@ const MobileHomeParkModel = () => {
 
   const handleRefreshReports = useCallback(() => {
     if (session?.user?.id) {
-      fetchSavedReports(session.user.id, sessionEmail);
+      fetchSavedReports();
     }
-  }, [fetchSavedReports, session, sessionEmail]);
+  }, [fetchSavedReports, session]);
 
   const handleSignOut = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -1067,7 +1133,7 @@ ${reportContent.innerHTML}
         setReportName(savedName);
       }
 
-      await fetchSavedReports(session.user.id, sessionEmail);
+      await fetchSavedReports();
 
       if (showAlert) {
         const message = warnings.length > 0
@@ -2547,9 +2613,8 @@ ${reportContent.innerHTML}
           if (isSupabaseConfigured && supabase) {
             try {
               const { data } = await supabase.auth.getSession();
-              const userId = data?.session?.user?.id;
-              if (userId) {
-                fetchSavedReports(userId);
+              if (data?.session?.user?.id) {
+                fetchSavedReports({ sessionOverride: data.session });
               }
             } catch (err) {
               console.error('Error refreshing saved reports after sign-in:', err);
