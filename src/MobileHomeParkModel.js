@@ -419,103 +419,10 @@ const MobileHomeParkModel = () => {
     }
   }, []);
 
-  const loadReport = useCallback(async (report) => {
-    if (!isSupabaseConfigured || !supabase) {
-      alert('Supabase is not configured. Please add your Supabase credentials to enable loading reports.');
-      return;
-    }
-
-    if (!session?.user?.id) {
-      setAuthModalOpen(true);
-      return;
-    }
-
-    const resolvedReportId =
-      (report && typeof report === 'object' ? report.id : report) || null;
-
-    if (!resolvedReportId) {
-      alert('Unable to load the selected report.');
-      return;
-    }
-
-    const reportIdString = String(resolvedReportId);
-    setLoadingReportId(reportIdString);
-
-    try {
-      const strategies = [];
-
-      if (session?.user?.id) {
-        strategies.push({
-          label: 'user_id',
-          apply: (query) => query.eq('user_id', session.user.id),
-        });
-      }
-
-      if (sessionEmail) {
-        strategies.push({
-          label: 'user_email',
-          apply: (query) => query.eq('user_email', sessionEmail),
-        });
-      }
-
-      strategies.push({ label: 'none', apply: (query) => query });
-
-      let data = null;
-      let lastError = null;
-
-      for (const strategy of strategies) {
-        try {
-          let query = supabase
-            .from('reports')
-            .select('*')
-            .eq('id', resolvedReportId)
-            .limit(1);
-
-          query = strategy.apply(query);
-
-          const response = await query.maybeSingle();
-
-          if (response.error) {
-            lastError = response.error;
-            if (response.error.code === '42703') {
-              console.warn(
-                `Supabase load strategy skipped due to missing column (${strategy.label}).`,
-                response.error.message || response.error
-              );
-              continue;
-            }
-            continue;
-          }
-
-          if (response.data) {
-            if (strategy.label === 'none' && session?.user?.id) {
-              const ownerId =
-                response.data?.report_state?.ownerUserId ||
-                response.data?.report_state?.userId ||
-                response.data?.report_state?.sessionUserId ||
-                null;
-
-              if (ownerId && ownerId !== session.user.id) {
-                console.warn('Skipping report that does not belong to the current user.');
-                continue;
-              }
-            }
-
-            data = response.data;
-            break;
-          }
-        } catch (strategyError) {
-          lastError = strategyError;
-          console.error('Unexpected error during report load strategy:', strategyError);
-        }
-      }
-
-      if (!data) {
-        if (lastError) {
-          console.error('Error loading saved report:', lastError);
-        }
-        alert('Unable to load the selected report.');
-        return;
+  const loadReportData = useCallback(
+    (data, { reportIdString } = {}) => {
+      if (!data || typeof data !== 'object') {
+        return false;
       }
 
       const normaliseCollection = (value) => {
@@ -528,9 +435,10 @@ const MobileHomeParkModel = () => {
         return null;
       };
 
-      const savedState = (data.report_state && typeof data.report_state === 'object')
-        ? data.report_state
-        : null;
+      const savedState =
+        data.report_state && typeof data.report_state === 'object'
+          ? data.report_state
+          : null;
 
       const resolvedUnits = savedState?.units || normaliseCollection(data.rent_roll);
       if (Array.isArray(resolvedUnits) && resolvedUnits.length > 0) {
@@ -610,23 +518,112 @@ const MobileHomeParkModel = () => {
       }
 
       setSelectedUnits([]);
-      setSelectedReportId(reportIdString);
+
+      const resolvedReportIdString =
+        reportIdString ||
+        (data.id !== undefined && data.id !== null ? String(data.id) : '');
+
+      if (resolvedReportIdString) {
+        setSelectedReportId(resolvedReportIdString);
+      }
+
       setReportName(
-        savedState?.reportName
-          || data.report_name
-          || data.park_name
-          || reportName
-          || 'Mobile Home Park Report'
+        savedState?.reportName ||
+          data.report_name ||
+          data.park_name ||
+          reportName ||
+          'Mobile Home Park Report'
       );
       setActiveTab(savedState?.activeTab || 'rent-roll');
-      alert('Report loaded successfully.');
-    } catch (err) {
-      console.error('Unexpected error loading report:', err);
-      alert('Unable to load the selected report.');
-    } finally {
-      setLoadingReportId(null);
-    }
-  }, [reportName, session, sessionEmail]);
+
+      return true;
+    },
+    [reportName, sessionEmail]
+  );
+
+  const loadReport = useCallback(
+    async (report) => {
+      if (!isSupabaseConfigured || !supabase) {
+        alert('Supabase is not configured. Please add your Supabase credentials to enable loading reports.');
+        return;
+      }
+
+      if (!session?.user?.id) {
+        setAuthModalOpen(true);
+        return;
+      }
+
+      const resolvedReportId =
+        (report && typeof report === 'object' ? report.id : report) || null;
+
+      if (!resolvedReportId) {
+        alert('Unable to load the selected report.');
+        return;
+      }
+
+      const reportIdString = String(resolvedReportId);
+      setLoadingReportId(reportIdString);
+
+      const apiBase = process.env.REACT_APP_API_BASE || '';
+      const accessToken = session?.access_token || null;
+
+      try {
+        const response = await fetch(`${apiBase}/api/load-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reportId: resolvedReportId, accessToken }),
+        });
+
+        let payload = null;
+
+        try {
+          payload = await response.json();
+        } catch (parseError) {
+          console.error('Unable to parse load report response JSON:', parseError);
+        }
+
+        if (payload?.warnings) {
+          payload.warnings
+            .filter(Boolean)
+            .forEach((warning) =>
+              console.warn('Load report warning:', warning)
+            );
+        }
+
+        if (!response.ok || !payload?.success || !payload?.data) {
+          const message = payload?.error || response.statusText || 'Unable to load the selected report.';
+
+          if (response.status === 404 || /not found/i.test(message)) {
+            alert('Report not found.');
+            return;
+          }
+
+          console.error('Error loading saved report:', {
+            status: response.status,
+            message,
+            details: payload?.details || null,
+          });
+          alert('Unable to load the selected report.');
+          return;
+        }
+
+        const applied = loadReportData(payload.data, { reportIdString });
+
+        if (!applied) {
+          alert('Unable to load the selected report.');
+          return;
+        }
+
+        alert('Report loaded successfully.');
+      } catch (err) {
+        console.error('Unexpected error loading report:', err);
+        alert('Unable to load the selected report.');
+      } finally {
+        setLoadingReportId(null);
+      }
+    },
+    [loadReportData, session]
+  );
 
   // Add/Remove units
   const addUnit = () => {
