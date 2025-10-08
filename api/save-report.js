@@ -26,8 +26,8 @@ const sanitizeColumnName = (rawColumn) => {
   return withoutTable.replace(/["'`]/g, '').replace(/-/g, '_');
 };
 
-const REQUIRED_COLUMNS = new Set(['report_state']);
-const RECOMMENDED_COLUMNS = new Set(['user_id', 'report_name']);
+const REQUIRED_COLUMNS = new Set();
+const RECOMMENDED_COLUMNS = new Set(['user_id', 'report_name', 'report_state']);
 const OPTIONAL_PROBE_COLUMNS = new Set(['report_html']);
 
 let cachedReportsSchemaStatus = {
@@ -127,11 +127,23 @@ const ensureReportsSchema = async () => {
       }
     }
 
+    let message = 'Unable to access the Supabase reports table. Check the table name and columns.';
+
+    const errorText = `${error.message || ''} ${error.details || ''}`.toLowerCase();
+
+    if (error.code === '42501' || errorText.includes('permission denied')) {
+      message =
+        'Supabase credentials do not have access to the "reports" table. Use the service role key or update Row Level Security.';
+    } else if (!supabaseServiceRoleKey) {
+      message =
+        'Supabase service role key is missing. Add SUPABASE_SERVICE_ROLE_KEY so the server can manage the "reports" table.';
+    }
+
     cachedReportsSchemaStatus = {
       ok: false,
       checkedAt: now,
       error: {
-        message: 'Unable to access the Supabase reports table. Check the table name and columns.',
+        message,
         code: error.code,
         details: error.details,
         hint: error.hint,
@@ -145,11 +157,25 @@ const ensureReportsSchema = async () => {
   const warnings = [];
 
   if (missingRecommended.size > 0) {
-    warnings.push(
-      `Supabase 'reports' table is missing recommended columns: ${Array.from(missingRecommended)
-        .sort()
-        .join(', ')}. The app will fall back to legacy mode, but add these columns to scope saves per-user.`
-    );
+    const recommendedList = Array.from(missingRecommended).sort();
+    const baseWarning =
+      `Supabase 'reports' table is missing recommended columns: ${recommendedList.join(', ')}. The app will fall back to legacy mode, but add these columns to restore full functionality.`;
+
+    const extras = [];
+
+    if (missingRecommended.has('user_id')) {
+      extras.push('Without "user_id" the app cannot scope saves per-user.');
+    }
+
+    if (missingRecommended.has('report_name')) {
+      extras.push('Without "report_name" the report picker will show generic names.');
+    }
+
+    if (missingRecommended.has('report_state')) {
+      extras.push('Without "report_state" only summary numbers will be stored and advanced inputs will reset on load.');
+    }
+
+    warnings.push([baseWarning, ...extras].join(' '));
   }
 
   if (missingOptional.has('report_html')) {

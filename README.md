@@ -49,18 +49,18 @@ With `RESEND_API_KEY` and `RESEND_FROM_EMAIL` configured the `/api/save-report` 
 
 Create a `reports` table that can store the generated HTML along with any of the optional metadata you want to persist. The API works best when the table includes a `report_html` column, but it will still persist the structured JSON state even if that field is absent (a warning will be logged and returned to the client).
 
-At a minimum you should provision the following columns so that authentication-linked saves keep working:
+At a minimum you should keep an auto-incrementing `id` and timestamps so the API can insert and update rows. The server now tolerates the absence of `user_id`, `report_name`, and `report_state`, but those columns are **strongly recommended** so that reports stay tied to each Supabase user and reload with their original inputs. The table below explains the impact of leaving them out:
 
-| Column | Type | Purpose |
-| --- | --- | --- |
-| `id` | `bigint` (identity) | Primary key used when updating an existing report |
-| `user_id` | `uuid` | Links a report back to the authenticated Supabase user |
-| `report_name` | `text` | Stores the friendly label shown in the saved-reports list |
-| `report_state` | `jsonb` | Persists the full underwriting form so the report can be reloaded |
-| `report_html` | `text` | Holds the rendered HTML that can be emailed or downloaded |
-| `created_at` / `updated_at` | `timestamptz` | Timestamps used for sorting and audit trails |
+| Column | Type | Purpose | If missing |
+| --- | --- | --- | --- |
+| `id` | `bigint` (identity) | Primary key used when updating an existing report | Required – saves will fail without it |
+| `created_at` / `updated_at` | `timestamptz` | Timestamps used for sorting and audit trails | Default to `now()` so new rows get sorted correctly |
+| `user_id` | `uuid` | Links a report back to the authenticated Supabase user | Reports save, but the picker cannot filter per account |
+| `report_name` | `text` | Stores the friendly label shown in the saved-reports list | Picker falls back to property names / generic labels |
+| `report_state` | `jsonb` | Persists the full underwriting form so the report can be reloaded | Only summary numbers persist; advanced inputs reset |
+| `report_html` | `text` | Holds the rendered HTML that can be emailed or downloaded | HTML is not stored in Supabase, but notification emails still send |
 
-If you started with an older schema that only tracked financial metrics, run the following SQL in the Supabase SQL editor to add the missing columns without disturbing existing data:
+If you started with an older schema that only tracked financial metrics, run the following SQL in the Supabase SQL editor to add the recommended columns without disturbing existing data:
 
 ```sql
 alter table public.reports
@@ -76,7 +76,7 @@ alter table public.reports
 
 Prefer using the Supabase UI? You can add the same columns from **Table editor → reports**:
 
-1. Click **+ New column** and create the following fields (nullable unless specified):
+1. Click **+ New column** and create any missing fields (nullable unless specified):
    - `user_id` (`uuid`) — reference `auth.users(id)`
    - `report_name` (`text`)
    - `report_state` (`jsonb`)
@@ -84,7 +84,7 @@ Prefer using the Supabase UI? You can add the same columns from **Table editor �
    - `created_at` / `updated_at` (`timestamptz`, default to `now()`)
 2. Save the changes and reload the underwriting app before trying again.
 
-The API will fall back to legacy compatibility mode if `user_id` or `report_name` are missing, but saves will no longer be scoped to each Supabase account. Add the columns above when possible so every user sees only their own reports and the saved-report list keeps its friendly names.
+Until you add these fields the API continues to save reports, but it runs in a compatibility mode: no per-user scoping, saved reports show generic names, and complex form inputs reset when you reload a report. Adding the columns restores the full experience.
 
 ### Automated schema helper (Supabase MCP server)
 
@@ -100,7 +100,7 @@ Then run the MCP command:
 npm run supabase:mcp
 ```
 
-The script connects with SSL, creates the `reports` table when it is missing, backfills required columns (`user_id`, `report_name`, `report_state`, `report_html`, timestamps), and installs the `reports_user_id_idx` index plus the `handle_reports_updated_at` trigger. The command prints a JSON summary showing exactly which operations ran so you can verify the changes before re-running your save tests.
+The script connects with SSL, creates the `reports` table when it is missing, backfills the recommended columns (`user_id`, `report_name`, `report_state`, `report_html`, timestamps), and installs the `reports_user_id_idx` index plus the `handle_reports_updated_at` trigger. The command prints a JSON summary showing exactly which operations ran so you can verify the changes before re-running your save tests.
 
 Once those fundamentals are in place you can add any of the optional analytics columns you want to persist. The full schema below creates a fully featured table that mirrors every field the UI knows how to store. Paste it into the Supabase SQL editor if you are setting things up from scratch:
 
