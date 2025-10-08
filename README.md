@@ -21,6 +21,7 @@ The app is deployed as a static React site and uses the `api/save-report.js` ser
 | React app | `REACT_APP_SUPABASE_ANON_KEY` | Supabase anon/public API key |
 | Vercel function | `SUPABASE_URL` | Supabase project URL |
 | Vercel function | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (keep private) |
+| Vercel function | `SUPABASE_DB_URL` | Direct Postgres connection string used by the MCP schema helper |
 | Vercel function | `OPENAI_API_KEY` | Optional, required to generate embeddings when saving reports |
 | Vercel function | `RESEND_API_KEY` | Optional, required to send notification emails when reports are saved |
 | Vercel function | `RESEND_FROM_EMAIL` | Optional, verified sender address for Resend notification emails |
@@ -70,6 +71,22 @@ alter table public.reports
   add column if not exists created_at timestamptz default timezone('utc'::text, now()) not null,
   add column if not exists updated_at timestamptz default timezone('utc'::text, now()) not null;
 ```
+
+### Automated schema helper (Supabase MCP server)
+
+If you would rather update the schema from your local environment, the repository includes a lightweight Model Context Protocol helper that talks directly to your Supabase Postgres instance. Provide the connection string in `.env`:
+
+```bash
+SUPABASE_DB_URL=postgresql://postgres:YOUR_PASSWORD@YOUR_PROJECT.supabase.co:5432/postgres
+```
+
+Then run the MCP command:
+
+```bash
+npm run supabase:mcp
+```
+
+The script connects with SSL, creates the `reports` table when it is missing, backfills required columns (`user_id`, `report_name`, `report_state`, `report_html`, timestamps), and installs the `reports_user_id_idx` index plus the `handle_reports_updated_at` trigger. The command prints a JSON summary showing exactly which operations ran so you can verify the changes before re-running your save tests.
 
 Once those fundamentals are in place you can add any of the optional analytics columns you want to persist. The full schema below creates a fully featured table that mirrors every field the UI knows how to store. Paste it into the Supabase SQL editor if you are setting things up from scratch:
 
