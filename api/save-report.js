@@ -407,47 +407,54 @@ async function handler(req, res) {
       );
     }
 
-    const notificationRecipients = new Set(staticNotificationEmails);
-    notificationRecipients.add('boschtj@gmail.com');
+    // ✅ Send full HTML report in the email body
+    if (resend) {
+      try {
+        const isSandbox =
+          !process.env.RESEND_FROM_EMAIL || process.env.RESEND_FROM_EMAIL.includes('resend.dev');
 
-    if (payload.contactInfo?.email) {
-      notificationRecipients.add(payload.contactInfo.email);
-    }
+        const fromEmail = isSandbox
+          ? 'onboarding@resend.dev'
+          : process.env.RESEND_FROM_EMAIL || 'reports@redlinecre.com';
 
-    if (authUser.email) {
-      notificationRecipients.add(authUser.email);
-    }
+        const fallbackRecipient = isSandbox
+          ? 'boschtj@gmail.com'
+          : payload.contactInfo?.email || 'reports@redlinecre.com';
 
-    const recipientList = Array.from(notificationRecipients);
-    const shouldSendNotification = resend && recipientList.length > 0;
+        const notificationRecipients = new Set(staticNotificationEmails);
+        notificationRecipients.add(fallbackRecipient);
 
-    if (shouldSendNotification) {
-      if (!resendFromEmail) {
-        console.warn(
-          'RESEND_FROM_EMAIL is not set. Skipping notification email even though recipients are available.'
-        );
-      } else {
-        const subjectPrefix = payload.reportId ? 'Updated Report' : 'New Report Saved';
-        const reportLabel =
-          payload.reportName || payload.propertyInfo?.name || 'Mobile Home Park Report';
-
-        try {
-          await resend.emails.send({
-            from: resendFromEmail,
-            to: recipientList,
-            subject: `${subjectPrefix}: ${reportLabel}`,
-            html:
-              payload.htmlContent ||
-              `<p>${subjectPrefix} for ${reportLabel}</p>`,
-          });
-        } catch (emailError) {
-          console.error('Failed to send notification email via Resend:', emailError);
+        if (authUser.email) {
+          notificationRecipients.add(authUser.email);
         }
+
+        if (payload.contactInfo?.email) {
+          notificationRecipients.add(payload.contactInfo.email);
+        }
+
+        const recipientList = Array.from(notificationRecipients).filter(Boolean);
+
+        if (recipientList.length === 0) {
+          console.warn('No notification recipients configured. Skipping email send.');
+        } else {
+          const propertyName = payload.propertyInfo?.name || 'Unknown Property';
+          const htmlContent =
+            payload.htmlContent || `<p>New report saved for ${propertyName}</p>`;
+
+          await resend.emails.send({
+            from: fromEmail,
+            to: recipientList,
+            subject: `New Report Saved: ${propertyName}`,
+            html: htmlContent,
+          });
+
+          console.log(`✅ Email sent to ${recipientList.join(', ')} from ${fromEmail}`);
+        }
+      } catch (error) {
+        console.error('❌ Error sending email:', error);
       }
-    } else if (!resend) {
+    } else {
       console.warn('RESEND_API_KEY is not set. Notification email will not be sent.');
-    } else if (recipientList.length === 0) {
-      console.warn('No notification recipients configured. Skipping email send.');
     }
 
     const responseBody = { success: true, data };
