@@ -254,7 +254,7 @@ Once you are satisfied with your changes locally:
 
 3. Vercel automatically detects the push, builds the project, and publishes a new deployment for that branch. You can monitor the progress from the Vercel dashboard or the Git provider's pull request view.
 
-If you are merging to the production branch (commonly `main`), Vercel will promote the resulting deployment to your production URL once the build succeeds.
+By default Vercel treats the `main` branch as production. This repository includes a [`vercel.json`](./vercel.json) file that overrides the production branch to `work` so pushes from the active development branch immediately promote to the live site. If your production branch differs, update `vercel.json` (or remove it) to match the branch you want Vercel to deploy automatically.
 
 ## Troubleshooting
 
