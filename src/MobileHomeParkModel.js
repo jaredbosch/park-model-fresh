@@ -116,6 +116,52 @@ const resolveReportDateValue = (report, stateOverride = undefined) => {
   return null;
 };
 
+const PAYROLL_EXPENSE_NAME = 'Payroll';
+
+const isPayrollExpense = (expense) => {
+  if (!expense || typeof expense !== 'object') {
+    return false;
+  }
+
+  if (expense.isPayroll) {
+    return true;
+  }
+
+  const rawName = typeof expense.name === 'string' ? expense.name : '';
+  return rawName.trim().toLowerCase() === PAYROLL_EXPENSE_NAME.toLowerCase();
+};
+
+const ensurePayrollExpense = (items) => {
+  if (!Array.isArray(items)) {
+    return [
+      { id: 1, name: PAYROLL_EXPENSE_NAME, amount: 0, isPayroll: true },
+    ];
+  }
+
+  const normalised = items.map((item) =>
+    isPayrollExpense(item)
+      ? { ...item, name: PAYROLL_EXPENSE_NAME, isPayroll: true }
+      : item
+  );
+
+  if (normalised.some((item) => isPayrollExpense(item))) {
+    return normalised;
+  }
+
+  const nextId = normalised.reduce((maxId, item) => {
+    const numericId = Number(item?.id);
+    if (Number.isFinite(numericId)) {
+      return Math.max(maxId, numericId);
+    }
+    return maxId;
+  }, 0);
+
+  return [
+    ...normalised,
+    { id: nextId + 1, name: PAYROLL_EXPENSE_NAME, amount: 0, isPayroll: true },
+  ];
+};
+
 const DEFAULT_PROPERTY_INFO = {
   name: 'Mobile Home Park',
   address: '',
@@ -143,15 +189,36 @@ const DEFAULT_IRR_INPUTS = {
   exitCapRate: 7.5
 };
 
+const DEFAULT_EXPENSES = ensurePayrollExpense([
+  { id: 1, name: 'Property Tax', amount: 18000 },
+  { id: 2, name: 'Insurance', amount: 12000 },
+  { id: 3, name: 'Utilities', amount: 8400 },
+  { id: 4, name: 'Maintenance & Repairs', amount: 15000 },
+  { id: 5, name: 'Advertising & Marketing', amount: 2400 },
+  { id: 6, name: 'Legal & Professional', amount: 3000 },
+  { id: 7, name: 'Administrative', amount: 5000 },
+  { id: 8, name: PAYROLL_EXPENSE_NAME, amount: 0, isPayroll: true },
+]);
+
 const DEFAULT_PROFORMA_INPUTS = {
   year1NewLeases: 7,
   year2NewLeases: 5,
   year3NewLeases: 5,
   year4NewLeases: 5,
   year5NewLeases: 5,
+  year1RentIncreaseValue: 0,
+  year1RentIncreaseMode: 'percent',
+  year2RentIncreaseValue: 0,
+  year2RentIncreaseMode: 'percent',
   annualRentIncrease: 3,
+  annualRentIncreaseMode: 'percent',
   annualExpenseIncrease: 2.5
 };
+
+const normaliseProformaInputs = (inputs = {}) => ({
+  ...DEFAULT_PROFORMA_INPUTS,
+  ...inputs,
+});
 const MobileHomeParkModel = () => {
   const [session, setSession] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -391,15 +458,7 @@ const MobileHomeParkModel = () => {
   const [actualIncome, setActualIncome] = useState(0);
   
   // Operating Expense Inputs
-  const [expenses, setExpenses] = useState([
-    { id: 1, name: 'Property Tax', amount: 18000 },
-    { id: 2, name: 'Insurance', amount: 12000 },
-    { id: 3, name: 'Utilities', amount: 8400 },
-    { id: 4, name: 'Maintenance & Repairs', amount: 15000 },
-    { id: 5, name: 'Advertising & Marketing', amount: 2400 },
-    { id: 6, name: 'Legal & Professional', amount: 3000 },
-    { id: 7, name: 'Administrative', amount: 5000 },
-  ]);
+  const [expenses, setExpenses] = useState(() => [...DEFAULT_EXPENSES]);
   
   const [managementPercent, setManagementPercent] = useState(5);
   
@@ -410,7 +469,7 @@ const MobileHomeParkModel = () => {
   const [irrInputs, setIrrInputs] = useState(() => ({ ...DEFAULT_IRR_INPUTS }));
 
   // Proforma Inputs
-  const [proformaInputs, setProformaInputs] = useState(() => ({ ...DEFAULT_PROFORMA_INPUTS }));
+  const [proformaInputs, setProformaInputs] = useState(() => normaliseProformaInputs());
 
   const fetchSavedReports = useCallback(
     async ({ sessionOverride, accessToken, userId } = {}) => {
@@ -759,11 +818,11 @@ const MobileHomeParkModel = () => {
       }
 
       if (Array.isArray(savedState?.expenses)) {
-        setExpenses(savedState.expenses);
+        setExpenses(ensurePayrollExpense(savedState.expenses));
       } else {
         const expenseItems = normaliseCollection(data.expense_items);
         if (Array.isArray(expenseItems) && expenseItems.length > 0) {
-          setExpenses(expenseItems);
+          setExpenses(ensurePayrollExpense(expenseItems));
         }
       }
 
@@ -788,7 +847,7 @@ const MobileHomeParkModel = () => {
       }
 
       if (savedState?.proformaInputs) {
-        setProformaInputs(savedState.proformaInputs);
+        setProformaInputs(normaliseProformaInputs(savedState.proformaInputs));
       }
 
       if (typeof savedState?.useActualIncome === 'boolean') {
@@ -1207,24 +1266,55 @@ const MobileHomeParkModel = () => {
 
   // Expense Functions
   const addExpenseItem = () => {
-    const newId = Math.max(...expenses.map(e => e.id), 0) + 1;
-    setExpenses([...expenses, {
-      id: newId,
-      name: 'New Expense',
-      amount: 0
-    }]);
+    const nextId = expenses.reduce((maxId, expense) => {
+      const numericId = Number(expense?.id);
+      if (Number.isFinite(numericId)) {
+        return Math.max(maxId, numericId);
+      }
+      return maxId;
+    }, 0) + 1;
+
+    setExpenses([
+      ...expenses,
+      {
+        id: nextId,
+        name: 'New Expense',
+        amount: 0,
+      },
+    ]);
   };
 
   const removeExpenseItem = (id) => {
-    if (expenses.length > 1) {
-      setExpenses(expenses.filter(e => e.id !== id));
+    const target = expenses.find((expense) => expense.id === id);
+
+    if (target && isPayrollExpense(target)) {
+      return;
     }
+
+    const remaining = expenses.filter((expense) => expense.id !== id);
+
+    if (remaining.length === 0) {
+      setExpenses(ensurePayrollExpense([]));
+      return;
+    }
+
+    setExpenses(remaining);
   };
 
   const updateExpenseItem = (id, field, value) => {
-    setExpenses(expenses.map(e => 
-      e.id === id ? { ...e, [field]: value } : e
-    ));
+    setExpenses(
+      expenses.map((expense) => {
+        if (expense.id !== id) {
+          return expense;
+        }
+
+        if (isPayrollExpense(expense) && field === 'name') {
+          return expense;
+        }
+
+        return { ...expense, [field]: value };
+      })
+    );
   };
 
   // Calculations
@@ -1335,34 +1425,119 @@ const MobileHomeParkModel = () => {
     const calculateProforma = () => {
       const years = [];
       let currentOccupiedUnits = occupiedUnits;
-      let currentRent = lotRentIncome / (occupiedUnits || 1) / 12; // Average monthly rent per occupied unit
+      const baseRent = occupiedUnits > 0 ? lotRentIncome / occupiedUnits / 12 : 0;
+      let currentRent = Number.isFinite(baseRent) ? baseRent : 0;
       let currentOtherIncome = totalAdditionalIncome;
       let currentExpenses = totalOpEx;
-      
-      for (let year = 1; year <= 5; year++) {
-        // Add new leases
-        let newLeases = 0;
-        if (year === 1) newLeases = proformaInputs.year1NewLeases;
-        if (year === 2) newLeases = proformaInputs.year2NewLeases;
-        if (year === 3) newLeases = proformaInputs.year3NewLeases;
-        if (year === 4) newLeases = proformaInputs.year4NewLeases;
-        if (year === 5) newLeases = proformaInputs.year5NewLeases;
-        
-        currentOccupiedUnits = Math.min(currentOccupiedUnits + newLeases, totalUnits);
-        
-        // Apply rent increase
-        if (year > 1) {
-          currentRent = currentRent * (1 + proformaInputs.annualRentIncrease / 100);
-          currentOtherIncome = currentOtherIncome * (1 + proformaInputs.annualRentIncrease / 100);
-          currentExpenses = currentExpenses * (1 + proformaInputs.annualExpenseIncrease / 100);
+
+      const resolveMode = (mode) =>
+        mode === 'dollar' || mode === 'flat' ? 'dollar' : 'percent';
+
+      const toNumber = (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
+      const applyRentIncrease = (rent, value, mode) => {
+        const safeBase = Number.isFinite(rent) ? rent : 0;
+        const increaseValue = toNumber(value);
+        const resolvedMode = resolveMode(mode);
+
+        if (!increaseValue) {
+          return {
+            nextRent: safeBase,
+            amountChange: 0,
+            percentChange: 0,
+            mode: 'none',
+          };
         }
-        
+
+        if (resolvedMode === 'dollar') {
+          const nextRentRaw = safeBase + increaseValue;
+          const nextRent = Math.max(0, nextRentRaw);
+          const amountChange = nextRent - safeBase;
+          const percentChange =
+            safeBase !== 0 ? (amountChange / safeBase) * 100 : null;
+
+          return {
+            nextRent,
+            amountChange,
+            percentChange,
+            mode: 'dollar',
+          };
+        }
+
+        const percent = increaseValue;
+        const nextRentRaw = safeBase * (1 + percent / 100);
+        const nextRent = Math.max(0, nextRentRaw);
+        const amountChange = nextRent - safeBase;
+
+        return {
+          nextRent,
+          amountChange,
+          percentChange: percent,
+          mode: 'percent',
+        };
+      };
+
+      for (let year = 1; year <= 5; year++) {
+        let newLeases = 0;
+        if (year === 1) newLeases = toNumber(proformaInputs.year1NewLeases);
+        if (year === 2) newLeases = toNumber(proformaInputs.year2NewLeases);
+        if (year === 3) newLeases = toNumber(proformaInputs.year3NewLeases);
+        if (year === 4) newLeases = toNumber(proformaInputs.year4NewLeases);
+        if (year === 5) newLeases = toNumber(proformaInputs.year5NewLeases);
+
+        currentOccupiedUnits = Math.min(currentOccupiedUnits + newLeases, totalUnits);
+
+        let appliedIncrease = {
+          nextRent: currentRent,
+          amountChange: 0,
+          percentChange: 0,
+          mode: 'none',
+        };
+
+        if (year === 1) {
+          appliedIncrease = applyRentIncrease(
+            currentRent,
+            proformaInputs.year1RentIncreaseValue,
+            proformaInputs.year1RentIncreaseMode
+          );
+        } else if (year === 2) {
+          appliedIncrease = applyRentIncrease(
+            currentRent,
+            proformaInputs.year2RentIncreaseValue,
+            proformaInputs.year2RentIncreaseMode
+          );
+        } else {
+          appliedIncrease = applyRentIncrease(
+            currentRent,
+            proformaInputs.annualRentIncrease,
+            proformaInputs.annualRentIncreaseMode
+          );
+        }
+
+        currentRent = appliedIncrease.nextRent;
+
+        if (
+          appliedIncrease.percentChange !== null &&
+          appliedIncrease.percentChange !== 0
+        ) {
+          currentOtherIncome =
+            currentOtherIncome * (1 + appliedIncrease.percentChange / 100);
+        }
+
+        if (year > 1) {
+          currentExpenses =
+            currentExpenses * (1 + toNumber(proformaInputs.annualExpenseIncrease) / 100);
+        }
+
         const yearLotRent = currentRent * currentOccupiedUnits * 12;
         const yearTotalIncome = yearLotRent + currentOtherIncome;
         const yearNOI = yearTotalIncome - currentExpenses;
         const yearCashFlow = yearNOI - annualDebtService;
-        const yearOccupancy = (currentOccupiedUnits / totalUnits) * 100;
-        
+        const yearOccupancy = totalUnits > 0 ? (currentOccupiedUnits / totalUnits) * 100 : 0;
+
         years.push({
           year,
           occupiedUnits: currentOccupiedUnits,
@@ -1374,10 +1549,13 @@ const MobileHomeParkModel = () => {
           expenses: currentExpenses,
           noi: yearNOI,
           debtService: annualDebtService,
-          cashFlow: yearCashFlow
+          cashFlow: yearCashFlow,
+          rentIncreaseAmount: appliedIncrease.amountChange,
+          rentIncreasePercent: appliedIncrease.percentChange,
+          rentIncreaseMode: appliedIncrease.mode,
         });
       }
-      
+
       return years;
     };
     
@@ -1430,6 +1608,37 @@ const MobileHomeParkModel = () => {
 
   const formatPercent = (value) => {
     return `${value.toFixed(2)}%`;
+  };
+
+  const describeRentIncrease = (year) => {
+    if (!year || typeof year !== 'object') {
+      return '—';
+    }
+
+    const amount = Number(year.rentIncreaseAmount);
+    const percent = year.rentIncreasePercent;
+    const hasAmount = Number.isFinite(amount) && amount !== 0;
+    const hasPercent =
+      typeof percent === 'number' && Number.isFinite(percent) && percent !== 0;
+
+    if (!hasAmount && !hasPercent) {
+      return '—';
+    }
+
+    const parts = [];
+
+    if (hasPercent) {
+      parts.push(`${percent > 0 ? '+' : ''}${percent.toFixed(2)}%`);
+    }
+
+    if (hasAmount) {
+      const absoluteAmount = Math.abs(amount);
+      parts.push(
+        `${amount >= 0 ? '+' : '-'}${formatCurrency(absoluteAmount)} /mo`
+      );
+    }
+
+    return parts.join(' ');
   };
 
   const buildReportHtml = () => {
@@ -2525,34 +2734,50 @@ ${reportContent.innerHTML}
                     </button>
                   </div>
                   <div className="space-y-3">
-                    {expenses.map((expense) => (
-                      <div key={expense.id} className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <input
-                            type="text"
-                            value={expense.name}
-                            onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
-                            className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
-                            placeholder="Expense name"
-                          />
-                          <input
-                            type="number"
-                            value={expense.amount}
-                            onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
-                            className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
-                          />
-                          <button
-                            onClick={() => removeExpenseItem(expense.id)}
-                            className="ml-3 text-red-600 hover:text-red-800 font-semibold"
-                          >
-                            Remove
-                          </button>
+                    {expenses.map((expense) => {
+                      const payroll = isPayrollExpense(expense);
+                      const perLotAmount =
+                        calculations.totalUnits > 0
+                          ? expense.amount / calculations.totalUnits
+                          : 0;
+
+                      return (
+                        <div key={expense.id} className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            {payroll ? (
+                              <div className="flex-1 p-2 border border-gray-300 rounded bg-blue-100 text-blue-900 font-semibold mr-3">
+                                {PAYROLL_EXPENSE_NAME}
+                              </div>
+                            ) : (
+                              <input
+                                type="text"
+                                value={expense.name}
+                                onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
+                                className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
+                                placeholder="Expense name"
+                              />
+                            )}
+                            <input
+                              type="number"
+                              value={expense.amount}
+                              onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
+                              className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
+                            />
+                            {!payroll && (
+                              <button
+                                onClick={() => removeExpenseItem(expense.id)}
+                                className="ml-3 text-red-600 hover:text-red-800 font-semibold"
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex justify-end text-xs text-gray-600 italic mr-20">
+                            {formatCurrency(perLotAmount)} per lot/year
+                          </div>
                         </div>
-                        <div className="flex justify-end text-xs text-gray-600 italic mr-20">
-                          {formatCurrency(expense.amount / calculations.totalUnits)} per lot/year
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     <div className="space-y-1">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center space-x-2">
@@ -2891,27 +3116,136 @@ ${reportContent.innerHTML}
               {/* Growth Assumptions */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">Growth Assumptions</h3>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Annual Rent Increase %</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={proformaInputs.annualRentIncrease}
-                      onChange={(e) => setProformaInputs({...proformaInputs, annualRentIncrease: Number(e.target.value)})}
-                      className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
-                    />
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Year 1 Rent Increase</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={proformaInputs.year1RentIncreaseValue}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year1RentIncreaseValue: Number(e.target.value),
+                          })
+                        }
+                        className="flex-1 p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                      />
+                      <select
+                        value={proformaInputs.year1RentIncreaseMode}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year1RentIncreaseMode: e.target.value,
+                          })
+                        }
+                        className="w-32 p-3 border border-gray-300 rounded bg-white text-gray-700 font-semibold"
+                      >
+                        <option value="percent">% Percent</option>
+                        <option value="dollar">Flat $</option>
+                      </select>
+                    </div>
                   </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Year 2 Rent Increase</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={proformaInputs.year2RentIncreaseValue}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year2RentIncreaseValue: Number(e.target.value),
+                          })
+                        }
+                        className="flex-1 p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                      />
+                      <select
+                        value={proformaInputs.year2RentIncreaseMode}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year2RentIncreaseMode: e.target.value,
+                          })
+                        }
+                        className="w-32 p-3 border border-gray-300 rounded bg-white text-gray-700 font-semibold"
+                      >
+                        <option value="percent">% Percent</option>
+                        <option value="dollar">Flat $</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Subsequent Annual Rent Increase</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={proformaInputs.annualRentIncrease}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            annualRentIncrease: Number(e.target.value),
+                          })
+                        }
+                        className="flex-1 p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                      />
+                      <select
+                        value={proformaInputs.annualRentIncreaseMode}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            annualRentIncreaseMode: e.target.value,
+                          })
+                        }
+                        className="w-32 p-3 border border-gray-300 rounded bg-white text-gray-700 font-semibold"
+                      >
+                        <option value="percent">% Percent</option>
+                        <option value="dollar">Flat $</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Annual Expense Increase %</label>
                     <input
                       type="number"
                       step="0.1"
                       value={proformaInputs.annualExpenseIncrease}
-                      onChange={(e) => setProformaInputs({...proformaInputs, annualExpenseIncrease: Number(e.target.value)})}
+                      onChange={(e) =>
+                        setProformaInputs({
+                          ...proformaInputs,
+                          annualExpenseIncrease: Number(e.target.value),
+                        })
+                      }
                       className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
                     />
                   </div>
+                </div>
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {[
+                    { label: 'Year 1 Rent Change', index: 0 },
+                    { label: 'Year 2 Rent Change', index: 1 },
+                    { label: 'Year 3+ Rent Change', index: 2 },
+                  ].map(({ label, index }) => {
+                    const year = calculations.proformaYears[index] || null;
+                    return (
+                      <div
+                        key={label}
+                        className="bg-white border border-gray-200 rounded p-3 shadow-sm"
+                      >
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                          {label}
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-gray-800">
+                          {describeRentIncrease(year)}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2973,6 +3307,14 @@ ${reportContent.innerHTML}
                       {calculations.proformaYears.map((year) => (
                         <td key={year.year} className="p-4 text-center font-semibold border-r border-gray-200">
                           {formatCurrency(year.avgMonthlyRent)}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="bg-slate-50 border-b border-gray-300">
+                      <td className="p-4 font-bold text-gray-800 border-r border-gray-300">Rent Growth Applied (per lot/month)</td>
+                      {calculations.proformaYears.map((year) => (
+                        <td key={year.year} className="p-4 text-center font-semibold text-gray-700 border-r border-gray-200">
+                          {describeRentIncrease(year)}
                         </td>
                       ))}
                     </tr>
