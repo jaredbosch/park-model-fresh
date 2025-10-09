@@ -116,52 +116,6 @@ const resolveReportDateValue = (report, stateOverride = undefined) => {
   return null;
 };
 
-const PAYROLL_EXPENSE_NAME = 'Payroll';
-
-const isPayrollExpense = (expense) => {
-  if (!expense || typeof expense !== 'object') {
-    return false;
-  }
-
-  if (expense.isPayroll) {
-    return true;
-  }
-
-  const rawName = typeof expense.name === 'string' ? expense.name : '';
-  return rawName.trim().toLowerCase() === PAYROLL_EXPENSE_NAME.toLowerCase();
-};
-
-const ensurePayrollExpense = (items) => {
-  if (!Array.isArray(items)) {
-    return [
-      { id: 1, name: PAYROLL_EXPENSE_NAME, amount: 0, isPayroll: true },
-    ];
-  }
-
-  const normalised = items.map((item) =>
-    isPayrollExpense(item)
-      ? { ...item, name: PAYROLL_EXPENSE_NAME, isPayroll: true }
-      : item
-  );
-
-  if (normalised.some((item) => isPayrollExpense(item))) {
-    return normalised;
-  }
-
-  const nextId = normalised.reduce((maxId, item) => {
-    const numericId = Number(item?.id);
-    if (Number.isFinite(numericId)) {
-      return Math.max(maxId, numericId);
-    }
-    return maxId;
-  }, 0);
-
-  return [
-    ...normalised,
-    { id: nextId + 1, name: PAYROLL_EXPENSE_NAME, amount: 0, isPayroll: true },
-  ];
-};
-
 const DEFAULT_PROPERTY_INFO = {
   name: 'Mobile Home Park',
   address: '',
@@ -189,7 +143,7 @@ const DEFAULT_IRR_INPUTS = {
   exitCapRate: 7.5
 };
 
-const DEFAULT_EXPENSES = ensurePayrollExpense([
+const DEFAULT_EXPENSES = [
   { id: 1, name: 'Property Tax', amount: 18000 },
   { id: 2, name: 'Insurance', amount: 12000 },
   { id: 3, name: 'Utilities', amount: 8400 },
@@ -197,8 +151,8 @@ const DEFAULT_EXPENSES = ensurePayrollExpense([
   { id: 5, name: 'Advertising & Marketing', amount: 2400 },
   { id: 6, name: 'Legal & Professional', amount: 3000 },
   { id: 7, name: 'Administrative', amount: 5000 },
-  { id: 8, name: PAYROLL_EXPENSE_NAME, amount: 0, isPayroll: true },
-]);
+  { id: 8, name: 'Payroll', amount: 0 },
+];
 
 const DEFAULT_PROFORMA_INPUTS = {
   year1NewLeases: 7,
@@ -817,13 +771,20 @@ const MobileHomeParkModel = () => {
         }
       }
 
+      let nextExpenses = null;
       if (Array.isArray(savedState?.expenses)) {
-        setExpenses(ensurePayrollExpense(savedState.expenses));
+        nextExpenses = savedState.expenses;
       } else {
         const expenseItems = normaliseCollection(data.expense_items);
         if (Array.isArray(expenseItems) && expenseItems.length > 0) {
-          setExpenses(ensurePayrollExpense(expenseItems));
+          nextExpenses = expenseItems;
         }
+      }
+
+      if (Array.isArray(nextExpenses)) {
+        setExpenses(nextExpenses);
+      } else {
+        setExpenses([...DEFAULT_EXPENSES]);
       }
 
       if (typeof savedState?.managementPercent === 'number') {
@@ -1285,35 +1246,14 @@ const MobileHomeParkModel = () => {
   };
 
   const removeExpenseItem = (id) => {
-    const target = expenses.find((expense) => expense.id === id);
-
-    if (target && isPayrollExpense(target)) {
-      return;
-    }
-
-    const remaining = expenses.filter((expense) => expense.id !== id);
-
-    if (remaining.length === 0) {
-      setExpenses(ensurePayrollExpense([]));
-      return;
-    }
-
-    setExpenses(remaining);
+    setExpenses(expenses.filter((expense) => expense.id !== id));
   };
 
   const updateExpenseItem = (id, field, value) => {
     setExpenses(
-      expenses.map((expense) => {
-        if (expense.id !== id) {
-          return expense;
-        }
-
-        if (isPayrollExpense(expense) && field === 'name') {
-          return expense;
-        }
-
-        return { ...expense, [field]: value };
-      })
+      expenses.map((expense) =>
+        expense.id === id ? { ...expense, [field]: value } : expense
+      )
     );
   };
 
@@ -2735,7 +2675,6 @@ ${reportContent.innerHTML}
                   </div>
                   <div className="space-y-3">
                     {expenses.map((expense) => {
-                      const payroll = isPayrollExpense(expense);
                       const perLotAmount =
                         calculations.totalUnits > 0
                           ? expense.amount / calculations.totalUnits
@@ -2744,33 +2683,25 @@ ${reportContent.innerHTML}
                       return (
                         <div key={expense.id} className="space-y-1">
                           <div className="flex items-center justify-between">
-                            {payroll ? (
-                              <div className="flex-1 p-2 border border-gray-300 rounded bg-blue-100 text-blue-900 font-semibold mr-3">
-                                {PAYROLL_EXPENSE_NAME}
-                              </div>
-                            ) : (
-                              <input
-                                type="text"
-                                value={expense.name}
-                                onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
-                                className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
-                                placeholder="Expense name"
-                              />
-                            )}
+                            <input
+                              type="text"
+                              value={expense.name}
+                              onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
+                              className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
+                              placeholder="Expense name"
+                            />
                             <input
                               type="number"
                               value={expense.amount}
                               onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
                               className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
                             />
-                            {!payroll && (
-                              <button
-                                onClick={() => removeExpenseItem(expense.id)}
-                                className="ml-3 text-red-600 hover:text-red-800 font-semibold"
-                              >
-                                Remove
-                              </button>
-                            )}
+                            <button
+                              onClick={() => removeExpenseItem(expense.id)}
+                              className="ml-3 text-red-600 hover:text-red-800 font-semibold"
+                            >
+                              Remove
+                            </button>
                           </div>
                           <div className="flex justify-end text-xs text-gray-600 italic mr-20">
                             {formatCurrency(perLotAmount)} per lot/year
