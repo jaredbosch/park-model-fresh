@@ -710,6 +710,12 @@ const MobileHomeParkModel = () => {
     fetchSavedReportsRef.current();
   }, [sessionUserId]);
 
+  useEffect(() => {
+    if (!session?.user && activeTab === 'my-reports') {
+      setActiveTab('rent-roll');
+    }
+  }, [session?.user, activeTab]);
+
   const savedReportCount = savedReports.length;
 
   useEffect(() => {
@@ -2380,7 +2386,9 @@ ${reportContent.innerHTML}
         {/* Tabs */}
         <div className="border-b border-gray-200 bg-gray-50">
           <div className="flex space-x-1 p-2">
-            {['rent-roll', 'pnl', 'proforma', 'returns', 'report', 'my-reports'].map((tab) => (
+            {[ 'rent-roll', 'pnl', 'proforma', 'returns', 'report', session?.user ? 'my-reports' : null]
+              .filter(Boolean)
+              .map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
