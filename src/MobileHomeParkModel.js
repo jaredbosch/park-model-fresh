@@ -154,6 +154,9 @@ const DEFAULT_EXPENSES = [
   { id: 8, name: 'Payroll', amount: 0 },
 ];
 
+const createDefaultExpenses = () =>
+  DEFAULT_EXPENSES.map((expense) => ({ ...expense }));
+
 const DEFAULT_PROFORMA_INPUTS = {
   year1NewLeases: 7,
   year2NewLeases: 5,
@@ -412,7 +415,7 @@ const MobileHomeParkModel = () => {
   const [actualIncome, setActualIncome] = useState(0);
   
   // Operating Expense Inputs
-  const [expenses, setExpenses] = useState(() => [...DEFAULT_EXPENSES]);
+  const [expenses, setExpenses] = useState(() => createDefaultExpenses());
   
   const [managementPercent, setManagementPercent] = useState(5);
   
@@ -784,7 +787,7 @@ const MobileHomeParkModel = () => {
       if (Array.isArray(nextExpenses)) {
         setExpenses(nextExpenses);
       } else {
-        setExpenses([...DEFAULT_EXPENSES]);
+        setExpenses(createDefaultExpenses());
       }
 
       if (typeof savedState?.managementPercent === 'number') {
