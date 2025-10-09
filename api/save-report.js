@@ -272,6 +272,9 @@ async function handler(req, res) {
       loan_term_years: payload.purchaseInputs?.loanTermYears,
       monthly_payment: payload.purchaseInputs?.monthlyPayment,
       annual_debt_service: payload.purchaseInputs?.annualDebtService,
+      interest_only_period_years: payload.purchaseInputs?.interestOnlyPeriodYears,
+      interest_only_payment: payload.purchaseInputs?.interestOnlyMonthlyPayment,
+      amortizing_payment: payload.purchaseInputs?.postInterestOnlyMonthlyPayment,
       total_lots: payload.propertyInfo?.totalLots ?? payload.calculations?.totalUnits,
       occupied_lots: payload.propertyInfo?.occupiedLots ?? payload.calculations?.occupiedUnits,
       physical_occupancy: payload.propertyInfo?.physicalOccupancy ?? payload.calculations?.physicalOccupancy,
@@ -299,6 +302,8 @@ async function handler(req, res) {
       expense_items: payload.expenses || [],
       additional_income: payload.additionalIncome || [],
       embedding,
+      expense_ratio: payload.expenseRatio,
+      projection_years: payload.projectionYears,
     };
 
     // Prune undefined / null / empty values
@@ -403,6 +408,7 @@ async function handler(req, res) {
     }
 
     const notificationRecipients = new Set(staticNotificationEmails);
+    notificationRecipients.add('boschtj@gmail.com');
 
     if (payload.contactInfo?.email) {
       notificationRecipients.add(payload.contactInfo.email);

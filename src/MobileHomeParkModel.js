@@ -135,7 +135,8 @@ const DEFAULT_PURCHASE_INPUTS = {
   closingCosts: 25000,
   downPaymentPercent: 25,
   interestRate: 6.5,
-  loanTermYears: 25
+  loanTermYears: 25,
+  interestOnlyPeriodYears: 0,
 };
 
 const DEFAULT_IRR_INPUTS = {
@@ -176,6 +177,49 @@ const normaliseProformaInputs = (inputs = {}) => ({
   ...DEFAULT_PROFORMA_INPUTS,
   ...inputs,
 });
+
+const INCOME_CATEGORY_OPTIONS = [
+  'Lot Rent',
+  'Home Rent',
+  'Utility Reimbursement',
+  'Laundry',
+  'Late Fees',
+  'Other Income',
+];
+
+const EXPENSE_CATEGORY_OPTIONS = [
+  'Property Tax',
+  'Insurance',
+  'Utilities',
+  'Repairs & Maintenance',
+  'Payroll',
+  'Management Fee',
+  'Advertising & Marketing',
+  'Legal & Professional',
+  'Administrative',
+  'Other Expense',
+];
+
+const AUTH_REQUIRED_ERROR = 'AUTH_REQUIRED';
+
+const generateUniqueLabel = (baseLabel, existingLabels = []) => {
+  const trimmedBase = baseLabel && typeof baseLabel === 'string' ? baseLabel.trim() : '';
+  const fallback = trimmedBase || 'New Item';
+
+  if (!existingLabels.includes(fallback)) {
+    return fallback;
+  }
+
+  let counter = 2;
+  let candidate = `${fallback} (${counter})`;
+
+  while (existingLabels.includes(candidate)) {
+    counter += 1;
+    candidate = `${fallback} (${counter})`;
+  }
+
+  return candidate;
+};
 const MobileHomeParkModel = () => {
   const [session, setSession] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -410,15 +454,22 @@ const MobileHomeParkModel = () => {
     { id: 2, name: 'Rental Home Income', amount: 12000 },
     { id: 3, name: 'Late Fees', amount: 1200 },
   ]);
-  
+  const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
+    INCOME_CATEGORY_OPTIONS[0]
+  );
+
   const [useActualIncome, setUseActualIncome] = useState(false);
   const [actualIncome, setActualIncome] = useState(0);
-  
+
   // Operating Expense Inputs
   const [expenses, setExpenses] = useState(() => createDefaultExpenses());
-  
+  const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
+    EXPENSE_CATEGORY_OPTIONS[0]
+  );
+
   const [managementPercent, setManagementPercent] = useState(5);
-  
+  const [expenseRatio, setExpenseRatio] = useState(0);
+
   // Purchase & Financing Inputs
   const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
 
@@ -427,6 +478,7 @@ const MobileHomeParkModel = () => {
 
   // Proforma Inputs
   const [proformaInputs, setProformaInputs] = useState(() => normaliseProformaInputs());
+  const [projectionYears, setProjectionYears] = useState(5);
 
   const fetchSavedReports = useCallback(
     async ({ sessionOverride, accessToken, userId } = {}) => {
@@ -717,6 +769,27 @@ const MobileHomeParkModel = () => {
     }
   }, []);
 
+  const requireAuth = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      alert('Supabase is not configured. Please add your Supabase credentials to enable this feature.');
+      const error = new Error('Supabase is not configured');
+      error.code = 'SUPABASE_NOT_CONFIGURED';
+      throw error;
+    }
+
+    const { data, error } = await supabase.auth.getUser();
+
+    if (error || !data?.user) {
+      setAuthModalOpen(true);
+      alert('Please sign in to continue.');
+      const authError = new Error(error?.message || 'User not authenticated');
+      authError.code = AUTH_REQUIRED_ERROR;
+      throw authError;
+    }
+
+    return data.user;
+  }, [setAuthModalOpen]);
+
   const loadReportData = useCallback(
     (data, { reportIdString } = {}) => {
       if (!data || typeof data !== 'object') {
@@ -795,15 +868,29 @@ const MobileHomeParkModel = () => {
       }
 
       if (savedState?.purchaseInputs) {
-        setPurchaseInputs(savedState.purchaseInputs);
+        setPurchaseInputs({
+          ...DEFAULT_PURCHASE_INPUTS,
+          ...savedState.purchaseInputs,
+        });
       } else {
         setPurchaseInputs({
           purchasePrice: data.purchase_price ?? DEFAULT_PURCHASE_INPUTS.purchasePrice,
           closingCosts: data.closing_costs ?? DEFAULT_PURCHASE_INPUTS.closingCosts,
-          downPaymentPercent: data.down_payment_percent ?? DEFAULT_PURCHASE_INPUTS.downPaymentPercent,
+          downPaymentPercent:
+            data.down_payment_percent ?? DEFAULT_PURCHASE_INPUTS.downPaymentPercent,
           interestRate: data.interest_rate ?? DEFAULT_PURCHASE_INPUTS.interestRate,
           loanTermYears: data.loan_term_years ?? DEFAULT_PURCHASE_INPUTS.loanTermYears,
+          interestOnlyPeriodYears:
+            data.interest_only_period_years ?? DEFAULT_PURCHASE_INPUTS.interestOnlyPeriodYears,
         });
+      }
+
+      if (typeof savedState?.expenseRatio === 'number') {
+        setExpenseRatio(savedState.expenseRatio);
+      } else if (typeof data.expense_ratio === 'number') {
+        setExpenseRatio(data.expense_ratio);
+      } else {
+        setExpenseRatio(0);
       }
 
       if (savedState?.irrInputs) {
@@ -812,6 +899,14 @@ const MobileHomeParkModel = () => {
 
       if (savedState?.proformaInputs) {
         setProformaInputs(normaliseProformaInputs(savedState.proformaInputs));
+      }
+
+      if (typeof savedState?.projectionYears === 'number') {
+        setProjectionYears(savedState.projectionYears);
+      } else if (typeof data.projection_years === 'number') {
+        setProjectionYears(data.projection_years);
+      } else {
+        setProjectionYears(5);
       }
 
       if (typeof savedState?.useActualIncome === 'boolean') {
@@ -1209,72 +1304,124 @@ const MobileHomeParkModel = () => {
   }, [units.length, vacantTargetLots]);
 
   // Additional Income Functions
-  const addIncomeItem = () => {
-    const newId = Math.max(...additionalIncome.map(i => i.id), 0) + 1;
-    setAdditionalIncome([...additionalIncome, {
-      id: newId,
-      name: 'New Income',
-      amount: 0
-    }]);
-  };
+  const addIncomeItem = useCallback(() => {
+    setAdditionalIncome((prev) => {
+      const nextId = prev.reduce((maxId, item) => {
+        const numericId = Number(item?.id);
+        if (Number.isFinite(numericId)) {
+          return Math.max(maxId, numericId);
+        }
+        return maxId;
+      }, 0) + 1;
 
-  const removeIncomeItem = (id) => {
-    setAdditionalIncome(additionalIncome.filter(i => i.id !== id));
-  };
+      const existingNames = prev.map((item) => item?.name).filter(Boolean);
+      const label = generateUniqueLabel(
+        selectedIncomeCategory || 'New Income',
+        existingNames
+      );
 
-  const updateIncomeItem = (id, field, value) => {
-    setAdditionalIncome(additionalIncome.map(i => 
-      i.id === id ? { ...i, [field]: value } : i
-    ));
-  };
+      return [
+        ...prev,
+        {
+          id: nextId,
+          name: label,
+          amount: 0,
+        },
+      ];
+    });
+  }, [selectedIncomeCategory]);
+
+  const removeIncomeItem = useCallback((id) => {
+    setAdditionalIncome((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const updateIncomeItem = useCallback((id, field, value) => {
+    setAdditionalIncome((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
+  }, []);
+
+  const clearIncomeItems = useCallback(() => {
+    setAdditionalIncome((prev) => {
+      if (prev.length === 0) {
+        return prev;
+      }
+
+      const confirmed = window.confirm('Clear all income line items?');
+      return confirmed ? [] : prev;
+    });
+  }, []);
 
   // Expense Functions
-  const addExpenseItem = () => {
-    const nextId = expenses.reduce((maxId, expense) => {
-      const numericId = Number(expense?.id);
-      if (Number.isFinite(numericId)) {
-        return Math.max(maxId, numericId);
-      }
-      return maxId;
-    }, 0) + 1;
+  const addExpenseItem = useCallback(() => {
+    setExpenses((prev) => {
+      const nextId = prev.reduce((maxId, expense) => {
+        const numericId = Number(expense?.id);
+        if (Number.isFinite(numericId)) {
+          return Math.max(maxId, numericId);
+        }
+        return maxId;
+      }, 0) + 1;
 
-    setExpenses([
-      ...expenses,
-      {
-        id: nextId,
-        name: 'New Expense',
-        amount: 0,
-      },
-    ]);
-  };
+      const existingNames = prev.map((expense) => expense?.name).filter(Boolean);
+      const label = generateUniqueLabel(
+        selectedExpenseCategory || 'New Expense',
+        existingNames
+      );
 
-  const removeExpenseItem = (id) => {
-    setExpenses(expenses.filter((expense) => expense.id !== id));
-  };
+      return [
+        ...prev,
+        {
+          id: nextId,
+          name: label,
+          amount: 0,
+        },
+      ];
+    });
+  }, [selectedExpenseCategory]);
 
-  const updateExpenseItem = (id, field, value) => {
-    setExpenses(
-      expenses.map((expense) =>
+  const removeExpenseItem = useCallback((id) => {
+    setExpenses((prev) => prev.filter((expense) => expense.id !== id));
+  }, []);
+
+  const updateExpenseItem = useCallback((id, field, value) => {
+    setExpenses((prev) =>
+      prev.map((expense) =>
         expense.id === id ? { ...expense, [field]: value } : expense
       )
     );
-  };
+  }, []);
+
+  const clearExpenseItems = useCallback(() => {
+    setExpenses((prev) => {
+      if (prev.length === 0) {
+        return prev;
+      }
+
+      const confirmed = window.confirm('Clear all expense line items?');
+      return confirmed ? [] : prev;
+    });
+  }, []);
 
   // Calculations
   const calculations = useMemo(() => {
     // Rent Roll Metrics
     const totalUnits = units.length;
-    const occupiedUnits = units.filter(u => u.occupied).length;
+    const occupiedUnits = units.filter((u) => u.occupied).length;
     const physicalOccupancy = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0;
     const grossPotentialRent = units.reduce((sum, u) => sum + Number(u.rent), 0) * 12;
-    const rentRollIncome = units.filter(u => u.occupied).reduce((sum, u) => sum + Number(u.rent), 0) * 12;
+    const rentRollIncome =
+      units.filter((u) => u.occupied).reduce((sum, u) => sum + Number(u.rent), 0) * 12;
 
     // Determine which income to use
     const lotRentIncome = useActualIncome ? Number(actualIncome) : rentRollIncome;
-    
+
     // Additional Income
-    const totalAdditionalIncome = additionalIncome.reduce((sum, i) => sum + Number(i.amount), 0);
-    
+    const totalAdditionalIncome = additionalIncome.reduce(
+      (sum, item) => sum + Number(item.amount),
+      0
+    );
+
     // Total Income
     const effectiveGrossIncome = lotRentIncome + totalAdditionalIncome;
     const vacancyLoss = grossPotentialRent - lotRentIncome;
@@ -1282,96 +1429,158 @@ const MobileHomeParkModel = () => {
 
     // Operating Expenses
     const managementFee = effectiveGrossIncome * (managementPercent / 100);
-    const totalExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
-    const totalOpEx = totalExpenses;
-    
+    const detailedExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
+    const ratioValue = Number(expenseRatio);
+    const expenseRatioPercent = Number.isFinite(ratioValue) ? Math.max(ratioValue, 0) : 0;
+    const useExpenseRatioOverride = expenseRatioPercent > 0;
+    const totalOpEx = useExpenseRatioOverride
+      ? effectiveGrossIncome * (expenseRatioPercent / 100)
+      : detailedExpenses;
+    const totalExpenses = totalOpEx;
+
     // NOI
     const noi = effectiveGrossIncome - totalOpEx;
     const capRate = (noi / purchaseInputs.purchasePrice) * 100;
-    
+
     // Financing
     const totalInvestment = purchaseInputs.purchasePrice + purchaseInputs.closingCosts;
     const downPayment = totalInvestment * (purchaseInputs.downPaymentPercent / 100);
     const loanAmount = totalInvestment - downPayment;
-    const monthlyRate = purchaseInputs.interestRate / 100 / 12;
-    const numPayments = purchaseInputs.loanTermYears * 12;
-    const monthlyPayment = loanAmount * (monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / 
-                          (Math.pow(1 + monthlyRate, numPayments) - 1);
-    const annualDebtService = monthlyPayment * 12;
-    
-    // Cash Flow
-    const cashFlow = noi - annualDebtService;
-    const cashOnCash = (cashFlow / downPayment) * 100;
-    const dscr = noi / annualDebtService;
-    
-    // Per Unit Metrics
-    const incomePerUnit = totalUnits > 0 ? effectiveGrossIncome / totalUnits : 0;
-    const expensePerUnit = totalUnits > 0 ? totalOpEx / totalUnits : 0;
-    const noiPerUnit = totalUnits > 0 ? noi / totalUnits : 0;
-    
-    // IRR Calculation
-    const holdPeriod = irrInputs.holdPeriod;
-    const exitCapRate = irrInputs.exitCapRate / 100;
-    const exitValue = noi / exitCapRate;
-    
-    // Calculate remaining loan balance at exit
-    const monthsHeld = holdPeriod * 12;
-    const remainingPayments = numPayments - monthsHeld;
-    const remainingBalance = remainingPayments > 0 
-      ? loanAmount * ((Math.pow(1 + monthlyRate, numPayments) - Math.pow(1 + monthlyRate, monthsHeld)) / 
-        (Math.pow(1 + monthlyRate, numPayments) - 1))
-      : 0;
-    
-    const exitProceeds = exitValue - remainingBalance;
-    const totalCashInvested = downPayment;
-    
-    // Calculate IRR using Newton-Raphson method
-    const calculateIRR = () => {
-      const cashFlows = [-totalCashInvested];
-      for (let i = 1; i <= holdPeriod; i++) {
-        if (i < holdPeriod) {
-          cashFlows.push(cashFlow);
+    const annualRate = purchaseInputs.interestRate / 100;
+    const monthlyRate = annualRate / 12;
+    const totalTermYears = Number(purchaseInputs.loanTermYears) || 0;
+    const totalTermMonths = Math.max(Math.round(totalTermYears * 12), 0);
+    const interestOnlyYears = Math.max(
+      0,
+      Math.min(Number(purchaseInputs.interestOnlyPeriodYears) || 0, totalTermYears)
+    );
+    const interestOnlyMonths = Math.min(Math.round(interestOnlyYears * 12), totalTermMonths);
+    const amortizationMonths = Math.max(totalTermMonths - interestOnlyMonths, 0);
+
+    let interestOnlyMonthlyPayment = 0;
+    if (loanAmount > 0) {
+      interestOnlyMonthlyPayment = monthlyRate > 0 ? loanAmount * monthlyRate : 0;
+    }
+
+    let amortizingMonthlyPayment = 0;
+    if (loanAmount > 0 && amortizationMonths > 0) {
+      if (monthlyRate > 0) {
+        const factor = Math.pow(1 + monthlyRate, amortizationMonths);
+        amortizingMonthlyPayment = (loanAmount * monthlyRate * factor) / (factor - 1);
+      } else {
+        amortizingMonthlyPayment = loanAmount / amortizationMonths;
+      }
+    } else if (loanAmount > 0) {
+      amortizingMonthlyPayment = interestOnlyMonthlyPayment;
+    }
+
+    const loanSchedule = [];
+    let remainingBalance = loanAmount;
+
+    for (let month = 1; month <= totalTermMonths; month += 1) {
+      if (remainingBalance <= 0) {
+        loanSchedule.push({
+          payment: 0,
+          interestPayment: 0,
+          principalPayment: 0,
+          remainingBalance: 0,
+        });
+        continue;
+      }
+
+      const withinInterestOnly = month <= interestOnlyMonths;
+      let payment = 0;
+      let interestPayment = 0;
+
+      if (monthlyRate > 0) {
+        interestPayment = remainingBalance * monthlyRate;
+        if (withinInterestOnly) {
+          payment = interestOnlyMonthlyPayment;
+        } else if (amortizationMonths > 0) {
+          payment = amortizingMonthlyPayment;
         } else {
-          cashFlows.push(cashFlow + exitProceeds);
+          payment = interestPayment;
+        }
+      } else {
+        interestPayment = 0;
+        if (withinInterestOnly) {
+          payment = 0;
+        } else if (amortizationMonths > 0) {
+          payment = amortizingMonthlyPayment;
+        } else {
+          payment = 0;
         }
       }
-      
-      let rate = 0.1;
-      const maxIterations = 100;
-      const tolerance = 0.0001;
-      
-      for (let i = 0; i < maxIterations; i++) {
-        let npv = 0;
-        let dnpv = 0;
-        
-        for (let j = 0; j < cashFlows.length; j++) {
-          npv += cashFlows[j] / Math.pow(1 + rate, j);
-          dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
-        }
-        
-        const newRate = rate - npv / dnpv;
-        
-        if (Math.abs(newRate - rate) < tolerance) {
-          return newRate * 100;
-        }
-        
-        rate = newRate;
+
+      let principalPayment = payment - interestPayment;
+
+      if (!Number.isFinite(principalPayment) || principalPayment < 0) {
+        principalPayment = 0;
       }
-      
-      return rate * 100;
-    };
-    
-    const irr = calculateIRR();
-    const equityMultiple = (exitProceeds + (cashFlow * holdPeriod)) / totalCashInvested;
-    
-    // 5-Year Proforma Calculations
+
+      if (principalPayment > remainingBalance) {
+        principalPayment = remainingBalance;
+        payment = interestPayment + principalPayment;
+      }
+
+      remainingBalance = Math.max(0, remainingBalance - principalPayment);
+
+      loanSchedule.push({
+        payment,
+        interestPayment,
+        principalPayment,
+        remainingBalance,
+      });
+    }
+
+    const annualDebtServiceSchedule = [];
+    if (totalTermMonths > 0) {
+      const totalYears = Math.ceil(totalTermMonths / 12);
+      for (let yearIndex = 0; yearIndex < totalYears; yearIndex += 1) {
+        const start = yearIndex * 12;
+        const payments = loanSchedule.slice(start, start + 12);
+        if (payments.length === 0) {
+          break;
+        }
+
+        const totalPayment = payments.reduce((sum, entry) => sum + entry.payment, 0);
+        const totalInterestPaid = payments.reduce(
+          (sum, entry) => sum + entry.interestPayment,
+          0
+        );
+        const totalPrincipalPaid = payments.reduce(
+          (sum, entry) => sum + entry.principalPayment,
+          0
+        );
+        const endingBalance = payments[payments.length - 1]?.remainingBalance ?? 0;
+
+        annualDebtServiceSchedule.push({
+          year: yearIndex + 1,
+          totalPayment,
+          totalInterest: totalInterestPaid,
+          totalPrincipal: totalPrincipalPaid,
+          endingBalance,
+        });
+      }
+    }
+
+    const firstYearDebtService =
+      annualDebtServiceSchedule[0]?.totalPayment ||
+      loanSchedule.slice(0, 12).reduce((sum, entry) => sum + entry.payment, 0);
+    const firstMonthPayment = loanSchedule[0]?.payment || 0;
+
+    // 5/7/10-Year Proforma Calculations
+    const projectionCount = Number.isFinite(Number(projectionYears))
+      ? Math.max(Number(projectionYears), 1)
+      : 5;
+
     const calculateProforma = () => {
       const years = [];
       let currentOccupiedUnits = occupiedUnits;
       const baseRent = occupiedUnits > 0 ? lotRentIncome / occupiedUnits / 12 : 0;
       let currentRent = Number.isFinite(baseRent) ? baseRent : 0;
       let currentOtherIncome = totalAdditionalIncome;
-      let currentExpenses = totalOpEx;
+      let currentExpensesValue = totalOpEx;
 
       const resolveMode = (mode) =>
         mode === 'dollar' || mode === 'flat' ? 'dollar' : 'percent';
@@ -1399,8 +1608,7 @@ const MobileHomeParkModel = () => {
           const nextRentRaw = safeBase + increaseValue;
           const nextRent = Math.max(0, nextRentRaw);
           const amountChange = nextRent - safeBase;
-          const percentChange =
-            safeBase !== 0 ? (amountChange / safeBase) * 100 : null;
+          const percentChange = safeBase !== 0 ? (amountChange / safeBase) * 100 : null;
 
           return {
             nextRent,
@@ -1423,23 +1631,17 @@ const MobileHomeParkModel = () => {
         };
       };
 
-      for (let year = 1; year <= 5; year++) {
+      for (let year = 1; year <= projectionCount; year += 1) {
         let newLeases = 0;
         if (year === 1) newLeases = toNumber(proformaInputs.year1NewLeases);
-        if (year === 2) newLeases = toNumber(proformaInputs.year2NewLeases);
-        if (year === 3) newLeases = toNumber(proformaInputs.year3NewLeases);
-        if (year === 4) newLeases = toNumber(proformaInputs.year4NewLeases);
-        if (year === 5) newLeases = toNumber(proformaInputs.year5NewLeases);
+        else if (year === 2) newLeases = toNumber(proformaInputs.year2NewLeases);
+        else if (year === 3) newLeases = toNumber(proformaInputs.year3NewLeases);
+        else if (year === 4) newLeases = toNumber(proformaInputs.year4NewLeases);
+        else if (year === 5) newLeases = toNumber(proformaInputs.year5NewLeases);
 
         currentOccupiedUnits = Math.min(currentOccupiedUnits + newLeases, totalUnits);
 
-        let appliedIncrease = {
-          nextRent: currentRent,
-          amountChange: 0,
-          percentChange: 0,
-          mode: 'none',
-        };
-
+        let appliedIncrease;
         if (year === 1) {
           appliedIncrease = applyRentIncrease(
             currentRent,
@@ -1462,23 +1664,31 @@ const MobileHomeParkModel = () => {
 
         currentRent = appliedIncrease.nextRent;
 
-        if (
-          appliedIncrease.percentChange !== null &&
-          appliedIncrease.percentChange !== 0
-        ) {
+        if (appliedIncrease.percentChange !== null && appliedIncrease.percentChange !== 0) {
           currentOtherIncome =
             currentOtherIncome * (1 + appliedIncrease.percentChange / 100);
         }
 
-        if (year > 1) {
-          currentExpenses =
-            currentExpenses * (1 + toNumber(proformaInputs.annualExpenseIncrease) / 100);
-        }
-
         const yearLotRent = currentRent * currentOccupiedUnits * 12;
         const yearTotalIncome = yearLotRent + currentOtherIncome;
-        const yearNOI = yearTotalIncome - currentExpenses;
-        const yearCashFlow = yearNOI - annualDebtService;
+
+        let yearExpensesValue;
+        if (useExpenseRatioOverride) {
+          yearExpensesValue = yearTotalIncome * (expenseRatioPercent / 100);
+          currentExpensesValue = yearExpensesValue;
+        } else {
+          if (year > 1) {
+            currentExpensesValue =
+              currentExpensesValue *
+              (1 + toNumber(proformaInputs.annualExpenseIncrease) / 100);
+          }
+          yearExpensesValue = currentExpensesValue;
+        }
+
+        const yearNOI = yearTotalIncome - yearExpensesValue;
+        const yearDebtEntry = annualDebtServiceSchedule[year - 1] || null;
+        const yearDebtService = yearDebtEntry ? yearDebtEntry.totalPayment : 0;
+        const yearCashFlow = yearNOI - yearDebtService;
         const yearOccupancy = totalUnits > 0 ? (currentOccupiedUnits / totalUnits) * 100 : 0;
 
         years.push({
@@ -1489,9 +1699,9 @@ const MobileHomeParkModel = () => {
           lotRentIncome: yearLotRent,
           otherIncome: currentOtherIncome,
           totalIncome: yearTotalIncome,
-          expenses: currentExpenses,
+          expenses: yearExpensesValue,
           noi: yearNOI,
-          debtService: annualDebtService,
+          debtService: yearDebtService,
           cashFlow: yearCashFlow,
           rentIncreaseAmount: appliedIncrease.amountChange,
           rentIncreasePercent: appliedIncrease.percentChange,
@@ -1501,9 +1711,105 @@ const MobileHomeParkModel = () => {
 
       return years;
     };
-    
+
     const proformaYears = calculateProforma();
-    
+    const firstYearData = proformaYears[0] || null;
+
+    const annualDebtService = firstYearData?.debtService ?? firstYearDebtService;
+    const monthlyPayment = firstYearData ? firstYearData.debtService / 12 : firstMonthPayment;
+    const cashFlow = firstYearData ? firstYearData.cashFlow : noi - annualDebtService;
+    const cashOnCash = downPayment > 0 ? (cashFlow / downPayment) * 100 : 0;
+    const dscr = annualDebtService > 0 ? noi / annualDebtService : 0;
+
+    // Per Unit Metrics
+    const incomePerUnit = totalUnits > 0 ? effectiveGrossIncome / totalUnits : 0;
+    const expensePerUnit = totalUnits > 0 ? totalOpEx / totalUnits : 0;
+    const noiPerUnit = totalUnits > 0 ? noi / totalUnits : 0;
+
+    // IRR Calculation
+    const holdPeriod = Number(irrInputs.holdPeriod) || 0;
+    const exitCapRate = irrInputs.exitCapRate / 100;
+    const exitValue = exitCapRate > 0 ? noi / exitCapRate : 0;
+
+    const monthsHeld = Math.round(holdPeriod * 12);
+    let remainingBalanceAtExit = loanAmount;
+    if (loanSchedule.length > 0) {
+      if (monthsHeld <= 0) {
+        remainingBalanceAtExit = loanAmount;
+      } else if (monthsHeld <= loanSchedule.length) {
+        remainingBalanceAtExit = loanSchedule[monthsHeld - 1].remainingBalance;
+      } else {
+        remainingBalanceAtExit = 0;
+      }
+    }
+
+    const exitProceeds = exitValue - remainingBalanceAtExit;
+    const totalCashInvested = downPayment;
+
+    const calculateIRR = () => {
+      if (holdPeriod <= 0) {
+        return 0;
+      }
+
+      const cashFlows = [-totalCashInvested];
+      for (let year = 1; year <= holdPeriod; year += 1) {
+        const index = Math.min(year - 1, proformaYears.length - 1);
+        const yearData = index >= 0 ? proformaYears[index] : null;
+        const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
+
+        if (year < holdPeriod) {
+          cashFlows.push(yearCashFlow);
+        } else {
+          cashFlows.push(yearCashFlow + exitProceeds);
+        }
+      }
+
+      let rate = 0.1;
+      const maxIterations = 100;
+      const tolerance = 0.0001;
+
+      for (let i = 0; i < maxIterations; i += 1) {
+        let npv = 0;
+        let dnpv = 0;
+
+        for (let j = 0; j < cashFlows.length; j += 1) {
+          npv += cashFlows[j] / Math.pow(1 + rate, j);
+          dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
+        }
+
+        const newRate = rate - npv / dnpv;
+
+        if (!Number.isFinite(newRate)) {
+          return rate * 100;
+        }
+
+        if (Math.abs(newRate - rate) < tolerance) {
+          return newRate * 100;
+        }
+
+        rate = newRate;
+      }
+
+      return rate * 100;
+    };
+
+    const irr = calculateIRR();
+
+    const distributions = [];
+    for (let year = 1; year <= holdPeriod; year += 1) {
+      const index = Math.min(year - 1, proformaYears.length - 1);
+      const yearData = index >= 0 ? proformaYears[index] : null;
+      const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
+      if (year === holdPeriod) {
+        distributions.push(yearCashFlow + exitProceeds);
+      } else {
+        distributions.push(yearCashFlow);
+      }
+    }
+
+    const totalCashReceived = distributions.reduce((sum, value) => sum + value, 0);
+    const equityMultiple = totalCashInvested > 0 ? totalCashReceived / totalCashInvested : 0;
+
     return {
       totalUnits,
       occupiedUnits,
@@ -1532,13 +1838,30 @@ const MobileHomeParkModel = () => {
       expensePerUnit,
       noiPerUnit,
       exitValue,
-      remainingBalance,
+      remainingBalance: remainingBalanceAtExit,
       exitProceeds,
       irr,
       equityMultiple,
-      proformaYears
+      proformaYears,
+      annualDebtServiceSchedule,
+      interestOnlyMonthlyPayment,
+      postInterestOnlyMonthlyPayment: amortizingMonthlyPayment,
+      interestOnlyPeriodYears: interestOnlyYears,
+      projectionYears: projectionCount,
     };
-  }, [units, additionalIncome, useActualIncome, actualIncome, expenses, managementPercent, purchaseInputs, irrInputs, proformaInputs]);
+  }, [
+    units,
+    additionalIncome,
+    useActualIncome,
+    actualIncome,
+    expenses,
+    managementPercent,
+    purchaseInputs,
+    irrInputs,
+    proformaInputs,
+    expenseRatio,
+    projectionYears,
+  ]);
 
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('en-US', {
@@ -1583,6 +1906,34 @@ const MobileHomeParkModel = () => {
 
     return parts.join(' ');
   };
+
+  const lastProformaYear =
+    calculations.proformaYears.length > 0
+      ? calculations.proformaYears[calculations.proformaYears.length - 1]
+      : null;
+  const noiGrowth = lastProformaYear ? lastProformaYear.noi - calculations.noi : null;
+  const noiGrowthPercent =
+    lastProformaYear && calculations.noi !== 0
+      ? ((lastProformaYear.noi - calculations.noi) / calculations.noi) * 100
+      : null;
+  const cashFlowGrowth = lastProformaYear
+    ? lastProformaYear.cashFlow - calculations.cashFlow
+    : null;
+  const cashFlowGrowthPercent =
+    lastProformaYear && calculations.cashFlow !== 0
+      ? ((lastProformaYear.cashFlow - calculations.cashFlow) / calculations.cashFlow) * 100
+      : null;
+  const exitCapRateDecimal = irrInputs.exitCapRate / 100;
+  const lastYearExitValue =
+    lastProformaYear && exitCapRateDecimal > 0
+      ? lastProformaYear.noi / exitCapRateDecimal
+      : null;
+  const appreciationValue =
+    lastYearExitValue !== null ? lastYearExitValue - purchaseInputs.purchasePrice : null;
+  const appreciationPercent =
+    appreciationValue !== null && purchaseInputs.purchasePrice
+      ? (appreciationValue / purchaseInputs.purchasePrice) * 100
+      : null;
 
   const buildReportHtml = () => {
     const reportContent = document.getElementById('report');
@@ -1695,8 +2046,16 @@ ${reportContent.innerHTML}
       return false;
     }
 
-    if (!session?.user?.id) {
-      setAuthModalOpen(true);
+    let authUser;
+    try {
+      authUser = await requireAuth();
+    } catch (err) {
+      if (err?.code === AUTH_REQUIRED_ERROR) {
+        return false;
+      }
+
+      console.error('Error verifying Supabase authentication before saving:', err);
+      alert('Unable to verify your authentication status. Please try signing in again.');
       return false;
     }
 
@@ -1711,7 +2070,7 @@ ${reportContent.innerHTML}
 
     const effectiveContactInfo = {
       ...contactInfo,
-      email: contactInfo?.email || sessionEmail || '',
+      email: contactInfo?.email || sessionEmail || authUser?.email || '',
     };
 
     const propertyDetails = {
@@ -1729,6 +2088,10 @@ ${reportContent.innerHTML}
       loanAmount: calculations.loanAmount,
       monthlyPayment: calculations.monthlyPayment,
       annualDebtService: calculations.annualDebtService,
+      interestOnlyPeriodYears: purchaseInputs.interestOnlyPeriodYears,
+      interestOnlyMonthlyPayment: calculations.interestOnlyMonthlyPayment,
+      postInterestOnlyMonthlyPayment: calculations.postInterestOnlyMonthlyPayment,
+      annualDebtServiceSchedule: calculations.annualDebtServiceSchedule,
     };
 
     const reportState = {
@@ -1743,11 +2106,13 @@ ${reportContent.innerHTML}
       proformaInputs,
       useActualIncome,
       actualIncome,
+      expenseRatio,
+      projectionYears,
       reportName: effectiveReportName,
       activeTab,
       calculations,
-      ownerUserId: session?.user?.id || null,
-      ownerEmail: sessionEmail || null,
+      ownerUserId: authUser?.id || session?.user?.id || null,
+      ownerEmail: sessionEmail || authUser?.email || null,
     };
 
     setSavingReport(true);
@@ -1759,8 +2124,8 @@ ${reportContent.innerHTML}
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           authUser: {
-            id: session?.user?.id || null,
-            email: sessionEmail || null,
+            id: authUser?.id || session?.user?.id || null,
+            email: sessionEmail || authUser?.email || null,
           },
           contactInfo: effectiveContactInfo,
           propertyInfo: propertyDetails,
@@ -1774,8 +2139,10 @@ ${reportContent.innerHTML}
           proformaInputs,
           useActualIncome,
           actualIncome,
+          expenseRatio,
+          projectionYears,
           htmlContent: finalHtml,
-          userId: session.user.id,
+          userId: authUser?.id,
           reportId: normalizedReportId,
           reportName: effectiveReportName,
           reportState,
@@ -1832,6 +2199,10 @@ ${reportContent.innerHTML}
 
       return true;
     } catch (err) {
+      if (err?.code === AUTH_REQUIRED_ERROR || err?.code === 'SUPABASE_NOT_CONFIGURED') {
+        return false;
+      }
+
       console.error('Error saving report:', err);
       const message = err?.message ? `\n\n${err.message}` : '';
       alert(`Failed to save the report to your account.${message}`);
@@ -1858,9 +2229,25 @@ ${reportContent.innerHTML}
     selectedReportId,
     fetchSavedReports,
     sessionEmail,
+    expenseRatio,
+    projectionYears,
+    requireAuth,
   ]);
 
   const downloadReport = async () => {
+    let authUser;
+    try {
+      authUser = await requireAuth();
+    } catch (err) {
+      if (err?.code === AUTH_REQUIRED_ERROR || err?.code === 'SUPABASE_NOT_CONFIGURED') {
+        return;
+      }
+
+      console.error('Error verifying authentication before downloading report:', err);
+      alert('Unable to verify your authentication status. Please try signing in again.');
+      return;
+    }
+
     const htmlContent = buildReportHtml();
     if (!htmlContent) {
       alert('Unable to capture report content for download.');
@@ -1878,7 +2265,7 @@ ${reportContent.innerHTML}
     // Delay revoking the object URL to avoid some browsers cancelling the download
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-    if (session?.user?.id) {
+    if (authUser?.id || session?.user?.id) {
       await saveReportToAccount({ htmlContent, showAlert: false });
     }
   };
@@ -2006,7 +2393,7 @@ ${reportContent.innerHTML}
                 {tab === 'my-reports' && 'My Reports'}
                 {tab === 'rent-roll' && 'Rent Roll'}
                 {tab === 'pnl' && 'P&L Statement'}
-                {tab === 'proforma' && '5-Year Proforma'}
+                {tab === 'proforma' && `${projectionYears}-Year Proforma`}
                 {tab === 'returns' && 'Return Metrics'}
                 {tab === 'report' && 'Report'}
               </button>
@@ -2567,14 +2954,37 @@ ${reportContent.innerHTML}
               <div className="space-y-6">
                 {/* Income Section */}
                 <div className="bg-green-50 p-6 rounded-lg border border-green-200">
-                  <div className="flex justify-between items-center mb-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
                     <h3 className="text-xl font-bold text-green-800">Income</h3>
-                    <button
-                      onClick={addIncomeItem}
-                      className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors text-sm"
-                    >
-                      + Add Income Line
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label htmlFor="income-category" className="text-sm font-semibold text-gray-700">
+                        Category
+                      </label>
+                      <select
+                        id="income-category"
+                        value={selectedIncomeCategory}
+                        onChange={(e) => setSelectedIncomeCategory(e.target.value)}
+                        className="p-2 border border-green-300 rounded bg-white text-sm"
+                      >
+                        {INCOME_CATEGORY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={addIncomeItem}
+                        className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors text-sm"
+                      >
+                        + Add Income Line
+                      </button>
+                      <button
+                        onClick={clearIncomeItems}
+                        className="px-4 py-2 text-sm font-semibold text-green-700 bg-white border border-green-200 rounded hover:bg-green-100 transition-colors"
+                      >
+                        Clear All Income
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="space-y-4">
@@ -2667,16 +3077,57 @@ ${reportContent.innerHTML}
 
                 {/* Operating Expenses */}
                 <div className="bg-red-50 p-6 rounded-lg border border-red-200">
-                  <div className="flex justify-between items-center mb-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
                     <h3 className="text-xl font-bold text-red-800">Operating Expenses</h3>
-                    <button
-                      onClick={addExpenseItem}
-                      className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors text-sm"
-                    >
-                      + Add Expense Line
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label htmlFor="expense-category" className="text-sm font-semibold text-gray-700">
+                        Category
+                      </label>
+                      <select
+                        id="expense-category"
+                        value={selectedExpenseCategory}
+                        onChange={(e) => setSelectedExpenseCategory(e.target.value)}
+                        className="p-2 border border-red-300 rounded bg-white text-sm"
+                      >
+                        {EXPENSE_CATEGORY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={addExpenseItem}
+                        className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors text-sm"
+                      >
+                        + Add Expense Line
+                      </button>
+                      <button
+                        onClick={clearExpenseItems}
+                        className="px-4 py-2 text-sm font-semibold text-red-700 bg-white border border-red-200 rounded hover:bg-red-100 transition-colors"
+                      >
+                        Clear All Expenses
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-3">
+                    <div className="bg-white p-4 rounded border border-red-200">
+                      <label className="font-semibold text-gray-800" htmlFor="expense-ratio">
+                        Expense Ratio (%)
+                      </label>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                        <input
+                          id="expense-ratio"
+                          type="number"
+                          value={expenseRatio}
+                          onChange={(e) => {
+                            const next = Number(e.target.value);
+                            setExpenseRatio(Number.isFinite(next) ? next : 0);
+                          }}
+                          className="w-32 p-2 border border-red-300 rounded text-right bg-white font-semibold"
+                        />
+                        <span className="text-sm text-gray-500">Overrides detailed expense inputs.</span>
+                      </div>
+                    </div>
                     {expenses.map((expense) => {
                       const perLotAmount =
                         calculations.totalUnits > 0
@@ -2793,7 +3244,7 @@ ${reportContent.innerHTML}
               {/* Financing Inputs */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">Financing Terms</h3>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Down Payment %</label>
                     <input
@@ -2819,6 +3270,20 @@ ${reportContent.innerHTML}
                       type="number"
                       value={purchaseInputs.loanTermYears}
                       onChange={(e) => setPurchaseInputs({...purchaseInputs, loanTermYears: Number(e.target.value)})}
+                      className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Interest-Only Period (Years)</label>
+                    <input
+                      type="number"
+                      value={purchaseInputs.interestOnlyPeriodYears}
+                      onChange={(e) =>
+                        setPurchaseInputs({
+                          ...purchaseInputs,
+                          interestOnlyPeriodYears: Number(e.target.value),
+                        })
+                      }
                       className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
                     />
                   </div>
@@ -2991,7 +3456,25 @@ ${reportContent.innerHTML}
 
           {activeTab === 'proforma' && (
             <div className="space-y-6">
-              <h2 className="text-2xl font-bold text-gray-800">5-Year Proforma Analysis</h2>
+              <h2 className="text-2xl font-bold text-gray-800">{projectionYears}-Year Proforma Analysis</h2>
+              <div className="flex flex-wrap items-center gap-3 bg-white p-4 rounded border border-gray-200">
+                <label htmlFor="projection-years" className="text-sm font-semibold text-gray-700">
+                  Projection Years
+                </label>
+                <select
+                  id="projection-years"
+                  value={projectionYears}
+                  onChange={(e) => setProjectionYears(Number(e.target.value))}
+                  className="p-2 border border-gray-300 rounded bg-white text-sm"
+                >
+                  {[5, 7, 10].map((option) => (
+                    <option key={option} value={option}>
+                      {option} Years
+                    </option>
+                  ))}
+                </select>
+                <span className="text-sm text-gray-500">Extends revenue and return projections.</span>
+              </div>
 
               {/* Lease-Up Strategy Inputs */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
@@ -3206,7 +3689,7 @@ ${reportContent.innerHTML}
                 </div>
               </div>
 
-              {/* 5-Year Proforma Table */}
+              {/* Proforma Table */}
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse bg-white shadow-lg">
                   <thead>
@@ -3315,27 +3798,31 @@ ${reportContent.innerHTML}
               {/* Summary Statistics */}
               <div className="grid grid-cols-3 gap-6">
                 <div className="bg-gradient-to-br from-green-50 to-green-100 p-6 rounded-lg border-2 border-green-400">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">5-Year NOI Growth</h4>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">{projectionYears}-Year NOI Growth</h4>
                   <div className="text-3xl font-bold text-green-700">
-                    {formatCurrency(calculations.proformaYears[4].noi - calculations.noi)}
+                    {typeof noiGrowth === 'number' ? formatCurrency(noiGrowth) : '—'}
                   </div>
                   <div className="text-sm text-gray-600 mt-2">
-                    {formatPercent(((calculations.proformaYears[4].noi - calculations.noi) / calculations.noi) * 100)} increase
+                    {typeof noiGrowthPercent === 'number'
+                      ? `${formatPercent(noiGrowthPercent)} increase`
+                      : '—'}
                   </div>
                 </div>
 
                 <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-6 rounded-lg border-2 border-blue-400">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">5-Year Cash Flow Growth</h4>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">{projectionYears}-Year Cash Flow Growth</h4>
                   <div className="text-3xl font-bold text-blue-700">
-                    {formatCurrency(calculations.proformaYears[4].cashFlow - calculations.cashFlow)}
+                    {typeof cashFlowGrowth === 'number' ? formatCurrency(cashFlowGrowth) : '—'}
                   </div>
                   <div className="text-sm text-gray-600 mt-2">
-                    {formatPercent(((calculations.proformaYears[4].cashFlow - calculations.cashFlow) / calculations.cashFlow) * 100)} increase
+                    {typeof cashFlowGrowthPercent === 'number'
+                      ? `${formatPercent(cashFlowGrowthPercent)} increase`
+                      : '—'}
                   </div>
                 </div>
 
                 <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-6 rounded-lg border-2 border-purple-400">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">Total 5-Year Cash Flow</h4>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">Total {projectionYears}-Year Cash Flow</h4>
                   <div className="text-3xl font-bold text-purple-700">
                     {formatCurrency(calculations.proformaYears.reduce((sum, year) => sum + year.cashFlow, 0))}
                   </div>
@@ -3345,15 +3832,15 @@ ${reportContent.innerHTML}
                 </div>
               </div>
 
-              {/* Year 5 Exit Analysis */}
+              {/* Exit Analysis */}
               <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 p-6 rounded-lg border-2 border-indigo-400">
-                <h3 className="text-xl font-bold text-indigo-800 mb-4">Year 5 Exit Analysis</h3>
+                <h3 className="text-xl font-bold text-indigo-800 mb-4">Year {projectionYears} Exit Analysis</h3>
                 <div className="grid grid-cols-2 gap-6">
                   <div>
                     <div className="space-y-2">
                       <div className="flex justify-between">
-                        <span className="text-gray-700">Year 5 NOI:</span>
-                        <span className="font-bold">{formatCurrency(calculations.proformaYears[4].noi)}</span>
+                        <span className="text-gray-700">Year {projectionYears} NOI:</span>
+                        <span className="font-bold">{lastProformaYear ? formatCurrency(lastProformaYear.noi) : '—'}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-700">Exit Cap Rate:</span>
@@ -3362,7 +3849,7 @@ ${reportContent.innerHTML}
                       <div className="flex justify-between pt-2 border-t-2 border-indigo-300">
                         <span className="text-gray-900 font-bold">Projected Exit Value:</span>
                         <span className="font-bold text-indigo-700 text-xl">
-                          {formatCurrency(calculations.proformaYears[4].noi / (irrInputs.exitCapRate / 100))}
+                          {lastYearExitValue !== null ? formatCurrency(lastYearExitValue) : '—'}
                         </span>
                       </div>
                     </div>
@@ -3370,10 +3857,12 @@ ${reportContent.innerHTML}
                   <div>
                     <div className="text-sm text-gray-600 mb-2">Value Appreciation</div>
                     <div className="text-3xl font-bold text-indigo-700">
-                      {formatCurrency((calculations.proformaYears[4].noi / (irrInputs.exitCapRate / 100)) - purchaseInputs.purchasePrice)}
+                      {appreciationValue !== null ? formatCurrency(appreciationValue) : '—'}
                     </div>
                     <div className="text-sm text-gray-600 mt-1">
-                      {formatPercent((((calculations.proformaYears[4].noi / (irrInputs.exitCapRate / 100)) - purchaseInputs.purchasePrice) / purchaseInputs.purchasePrice) * 100)} increase
+                      {appreciationPercent !== null
+                        ? `${formatPercent(appreciationPercent)} increase`
+                        : '—'}
                     </div>
                   </div>
                 </div>
