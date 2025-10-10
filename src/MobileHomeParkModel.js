@@ -9,7 +9,7 @@ import {
   Percent,
   PieChart,
 } from 'lucide-react';
-import supabase, { isSupabaseConfigured } from './supabaseClient';
+import { supabase, isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
 import { useToast } from './components/ToastProvider';
 

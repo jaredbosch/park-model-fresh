@@ -1,7 +1,7 @@
 // src/AuthPortal.jsx
 import React, { useEffect } from 'react';
 import { Auth, ThemeSupa } from '@supabase/auth-ui-react';
-import { supabase } from './supabaseClient';
+import { supabase } from '../supabaseClient';
 import { useNavigate } from 'react-router-dom';
 
 export default function AuthPortal({ isOpen, onClose }) {

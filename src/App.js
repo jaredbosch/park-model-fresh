@@ -8,7 +8,7 @@ import {
 import MobileHomeParkModel from "./MobileHomeParkModel";
 import LandingPage from "./LandingPage";
 import SharedReport from "./SharedReport";
-import supabase, { isSupabaseConfigured } from "./supabaseClient";
+import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import { ToastProvider } from "./components/ToastProvider";
 
 function ProtectedRoute({ children }) {
