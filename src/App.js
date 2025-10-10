@@ -7,6 +7,7 @@ import {
 } from "react-router-dom";
 import MobileHomeParkModel from "./MobileHomeParkModel";
 import LandingPage from "./LandingPage";
+import SharedReport from "./SharedReport";
 import supabase, { isSupabaseConfigured } from "./supabaseClient";
 import { ToastProvider } from "./components/ToastProvider";
 
@@ -77,6 +78,9 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+
+          {/* Public shared report route */}
+          <Route path="/report/:id" element={<SharedReport />} />
 
           {/* Catch-all redirect */}
           <Route path="*" element={<Navigate to="/" replace />} />

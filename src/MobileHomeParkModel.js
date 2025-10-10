@@ -1,5 +1,14 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { Download } from 'lucide-react';
+import {
+  Download,
+  RefreshCw,
+  Share2,
+  BarChart3,
+  DollarSign,
+  Home as HomeIcon,
+  Percent,
+  PieChart,
+} from 'lucide-react';
 import supabase, { isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
 import { useToast } from './components/ToastProvider';
@@ -169,6 +178,142 @@ const resolveReportDateValue = (report, stateOverride = undefined) => {
   return null;
 };
 
+const coerceNumber = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+};
+
+const resolveCapRate = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [report?.cap_rate, state?.calculations?.capRate];
+
+  for (const candidate of candidates) {
+    const numeric = coerceNumber(candidate);
+    if (numeric !== null) {
+      return numeric;
+    }
+  }
+
+  return null;
+};
+
+const resolveTotalIncome = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [
+    report?.total_income,
+    state?.calculations?.effectiveGrossIncome,
+    state?.calculations?.totalIncome,
+  ];
+
+  for (const candidate of candidates) {
+    const numeric = coerceNumber(candidate);
+    if (numeric !== null) {
+      return numeric;
+    }
+  }
+
+  return null;
+};
+
+const resolveTotalExpenses = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [report?.total_expenses, state?.calculations?.totalOpEx];
+
+  for (const candidate of candidates) {
+    const numeric = coerceNumber(candidate);
+    if (numeric !== null) {
+      return numeric;
+    }
+  }
+
+  return null;
+};
+
+const DEFAULT_ANALYTICS_METRICS = {
+  totalReports: 0,
+  averagePurchasePrice: null,
+  averagePricePerSite: null,
+  averageCapRate: null,
+  averageExpenseRatio: null,
+};
+
+const computeAnalyticsMetrics = (reports = []) => {
+  if (!Array.isArray(reports) || reports.length === 0) {
+    return { ...DEFAULT_ANALYTICS_METRICS };
+  }
+
+  let totalPurchasePrice = 0;
+  let purchasePriceCount = 0;
+  let totalPricePerSite = 0;
+  let pricePerSiteCount = 0;
+  let totalCapRate = 0;
+  let capRateCount = 0;
+  let totalExpenseRatio = 0;
+  let expenseRatioCount = 0;
+
+  reports.forEach((report) => {
+    const state = normaliseReportState(report?.report_state);
+
+    const purchasePrice = resolvePurchasePrice(report, state);
+    if (Number.isFinite(purchasePrice)) {
+      totalPurchasePrice += purchasePrice;
+      purchasePriceCount += 1;
+    }
+
+    const siteCount = resolveSiteCount(report, state);
+    if (Number.isFinite(purchasePrice) && Number.isFinite(siteCount) && siteCount > 0) {
+      totalPricePerSite += purchasePrice / siteCount;
+      pricePerSiteCount += 1;
+    }
+
+    const capRate = resolveCapRate(report, state);
+    if (Number.isFinite(capRate)) {
+      totalCapRate += capRate;
+      capRateCount += 1;
+    }
+
+    const totalIncome = resolveTotalIncome(report, state);
+    const totalExpenses = resolveTotalExpenses(report, state);
+    if (Number.isFinite(totalIncome) && totalIncome > 0 && Number.isFinite(totalExpenses)) {
+      totalExpenseRatio += (totalExpenses / totalIncome) * 100;
+      expenseRatioCount += 1;
+    }
+  });
+
+  return {
+    totalReports: reports.length,
+    averagePurchasePrice:
+      purchasePriceCount > 0 ? totalPurchasePrice / purchasePriceCount : null,
+    averagePricePerSite:
+      pricePerSiteCount > 0 ? totalPricePerSite / pricePerSiteCount : null,
+    averageCapRate: capRateCount > 0 ? totalCapRate / capRateCount : null,
+    averageExpenseRatio:
+      expenseRatioCount > 0 ? totalExpenseRatio / expenseRatioCount : null,
+  };
+};
+
 const DEFAULT_PROPERTY_INFO = {
   name: 'Mobile Home Park',
   address: '',
@@ -285,6 +430,12 @@ const MobileHomeParkModel = () => {
   const [loadingReports, setLoadingReports] = useState(false);
   const [loadingReportId, setLoadingReportId] = useState(null);
   const [deletingReportId, setDeletingReportId] = useState(null);
+  const [analyticsMetrics, setAnalyticsMetrics] = useState({
+    ...DEFAULT_ANALYTICS_METRICS,
+  });
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState('');
+  const [analyticsInitialized, setAnalyticsInitialized] = useState(false);
   const [reportName, setReportName] = useState('Mobile Home Park Report');
   const [quickPopulateRows, setQuickPopulateRows] = useState([
     {
@@ -754,6 +905,58 @@ const MobileHomeParkModel = () => {
   const sessionUserId = session?.user?.id || null;
 
   useEffect(() => {
+    if (!sessionUserId) {
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+      setAnalyticsError('');
+    }
+
+    setAnalyticsInitialized(false);
+  }, [sessionUserId, isSupabaseConfigured]);
+
+  const fetchAnalytics = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+      setAnalyticsError(
+        'Supabase is not configured. Add your Supabase credentials to enable analytics.'
+      );
+      setAnalyticsInitialized(true);
+      return;
+    }
+
+    if (!sessionUserId) {
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+      setAnalyticsError('');
+      setAnalyticsInitialized(true);
+      return;
+    }
+
+    setLoadingAnalytics(true);
+    setAnalyticsError('');
+
+    try {
+      const { data, error } = await supabase
+        .from('reports')
+        .select('id, report_state, report_name')
+        .eq('user_id', sessionUserId);
+
+      if (error) {
+        throw error;
+      }
+
+      const metrics = computeAnalyticsMetrics(data || []);
+      setAnalyticsMetrics(metrics);
+      setAnalyticsError('');
+    } catch (err) {
+      console.error('Failed to load analytics metrics:', err);
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+      setAnalyticsError('Unable to load analytics right now. Please try again.');
+    } finally {
+      setLoadingAnalytics(false);
+      setAnalyticsInitialized(true);
+    }
+  }, [sessionUserId]);
+
+  useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
       setSession(null);
       return;
@@ -800,10 +1003,20 @@ const MobileHomeParkModel = () => {
   }, [sessionUserId]);
 
   useEffect(() => {
-    if (!session?.user && activeTab === 'my-reports') {
+    if (!session?.user && (activeTab === 'my-reports' || activeTab === 'analytics')) {
       setActiveTab('rent-roll');
     }
   }, [session?.user, activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'analytics') {
+      return;
+    }
+
+    if (!analyticsInitialized) {
+      fetchAnalytics();
+    }
+  }, [activeTab, analyticsInitialized, fetchAnalytics]);
 
   useEffect(() => {
     if (!session?.user) {
@@ -884,6 +1097,10 @@ const MobileHomeParkModel = () => {
 
     fetchSavedReportsRef.current();
   }, [session]);
+
+  const handleRefreshAnalytics = useCallback(() => {
+    fetchAnalytics();
+  }, [fetchAnalytics]);
 
   const handleSignOut = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -2066,6 +2283,49 @@ const MobileHomeParkModel = () => {
     return `${value.toFixed(2)}%`;
   };
 
+  const analyticsCardData = [
+    {
+      id: 'totalReports',
+      label: 'Total Reports',
+      value: analyticsMetrics.totalReports,
+      icon: BarChart3,
+      accentClass: 'bg-blue-100 text-blue-600',
+      formatValue: (value) => value.toLocaleString('en-US'),
+    },
+    {
+      id: 'averagePurchasePrice',
+      label: 'Average Purchase Price',
+      value: analyticsMetrics.averagePurchasePrice,
+      icon: DollarSign,
+      accentClass: 'bg-emerald-100 text-emerald-600',
+      formatValue: (value) => formatCurrency(value),
+    },
+    {
+      id: 'averagePricePerSite',
+      label: 'Average Price per Site',
+      value: analyticsMetrics.averagePricePerSite,
+      icon: HomeIcon,
+      accentClass: 'bg-indigo-100 text-indigo-600',
+      formatValue: (value) => formatCurrency(value),
+    },
+    {
+      id: 'averageCapRate',
+      label: 'Average Cap Rate',
+      value: analyticsMetrics.averageCapRate,
+      icon: Percent,
+      accentClass: 'bg-purple-100 text-purple-600',
+      formatValue: (value) => formatPercent(value),
+    },
+    {
+      id: 'averageExpenseRatio',
+      label: 'Average Expense Ratio',
+      value: analyticsMetrics.averageExpenseRatio,
+      icon: PieChart,
+      accentClass: 'bg-amber-100 text-amber-600',
+      formatValue: (value) => formatPercent(value),
+    },
+  ];
+
   const describeRentIncrease = (year) => {
     if (!year || typeof year !== 'object') {
       return '—';
@@ -2699,31 +2959,109 @@ ${reportContent.innerHTML}
         {/* Tabs */}
         <div className="border-b border-gray-200 bg-gray-50">
           <div className="flex space-x-1 p-2">
-            {[ 'rent-roll', 'pnl', 'proforma', 'returns', 'report', session?.user ? 'my-reports' : null]
+            {[
+              'rent-roll',
+              'pnl',
+              'proforma',
+              'returns',
+              'report',
+              session?.user ? 'analytics' : null,
+              session?.user ? 'my-reports' : null,
+            ]
               .filter(Boolean)
               .map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-6 py-3 rounded-t font-semibold transition-colors ${
-                  activeTab === tab
-                    ? 'bg-white text-blue-700 border-t-2 border-blue-600'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {tab === 'my-reports' && 'My Reports'}
-                {tab === 'rent-roll' && 'Rent Roll'}
-                {tab === 'pnl' && 'P&L Statement'}
-                {tab === 'proforma' && `${projectionYears}-Year Proforma`}
-                {tab === 'returns' && 'Return Metrics'}
-                {tab === 'report' && 'Report'}
-              </button>
-            ))}
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-6 py-3 rounded-t font-semibold transition-colors ${
+                    activeTab === tab
+                      ? 'bg-white text-blue-700 border-t-2 border-blue-600'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {tab === 'rent-roll' && 'Rent Roll'}
+                  {tab === 'pnl' && 'P&L Statement'}
+                  {tab === 'proforma' && `${projectionYears}-Year Proforma`}
+                  {tab === 'returns' && 'Return Metrics'}
+                  {tab === 'report' && 'Report'}
+                  {tab === 'analytics' && 'Analytics'}
+                  {tab === 'my-reports' && 'My Reports'}
+                </button>
+              ))}
           </div>
         </div>
 
         {/* Content */}
         <div className="p-6">
+          {activeTab === 'analytics' && (
+            <div className="space-y-6">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-800">Portfolio Analytics</h2>
+                  <p className="text-sm text-gray-600">
+                    Aggregate metrics for every report saved to your account.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRefreshAnalytics}
+                  disabled={loadingAnalytics}
+                  className="inline-flex items-center gap-2 rounded border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                >
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  {loadingAnalytics ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+
+              {analyticsError ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  {analyticsError}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {loadingAnalytics && (
+                    <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                      Updating analytics…
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {analyticsCardData.map(({ id, label, value, icon: Icon, accentClass, formatValue }) => {
+                      const displayValue =
+                        value === null || value === undefined
+                          ? '—'
+                          : formatValue
+                          ? formatValue(value)
+                          : value.toLocaleString('en-US');
+
+                      return (
+                        <div
+                          key={id}
+                          className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm transition hover:shadow-md"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</p>
+                              <div className="mt-3 text-3xl font-bold text-gray-900">{displayValue}</div>
+                            </div>
+                            <div className={`rounded-full p-3 ${accentClass}`}>
+                              <Icon className="h-5 w-5" aria-hidden="true" />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {analyticsMetrics.totalReports === 0 && !loadingAnalytics && (
+                    <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">
+                      Save a report to populate your analytics dashboard.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'my-reports' && (
             <div className="space-y-6">
               <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -2902,6 +3240,49 @@ ${reportContent.innerHTML}
 
                             const isDeleting = deletingReportId === reportIdString;
 
+                            const handleShareReport = async (event) => {
+                              event.stopPropagation();
+                              event.preventDefault();
+
+                              if (isLoading || isDeleting) {
+                                return;
+                              }
+
+                              const origin =
+                                typeof window !== 'undefined' && window.location
+                                  ? window.location.origin
+                                  : '';
+
+                              const shareUrl = origin
+                                ? `${origin}/report/${reportIdString}`
+                                : `/report/${reportIdString}`;
+
+                              const clipboard =
+                                typeof navigator !== 'undefined' ? navigator.clipboard : null;
+
+                              if (clipboard?.writeText) {
+                                try {
+                                  await clipboard.writeText(shareUrl);
+                                  showToast({
+                                    message: '🔗 Share link copied to your clipboard.',
+                                    tone: 'success',
+                                  });
+                                  return;
+                                } catch (clipboardError) {
+                                  console.warn('Unable to copy share link automatically:', clipboardError);
+                                }
+                              }
+
+                              if (typeof window !== 'undefined') {
+                                window.prompt('Copy this shareable report URL:', shareUrl);
+                              }
+
+                              showToast({
+                                message: 'ℹ️ Share URL ready to share.',
+                                tone: 'info',
+                              });
+                            };
+
                             return (
                               <tr
                                 key={report.id}
@@ -2938,25 +3319,36 @@ ${reportContent.innerHTML}
                                   {formattedDate}
                                 </td>
                                 <td className="px-4 py-3 align-middle text-sm text-right">
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      event.preventDefault();
-                                      if (isLoading || isDeleting) {
-                                        return;
-                                      }
-                                      handleDeleteReport(report);
-                                    }}
-                                    disabled={isLoading || isDeleting}
-                                    className={`rounded border px-3 py-1 text-sm font-semibold transition ${
-                                      isDeleting
-                                        ? 'border-gray-300 text-gray-400 cursor-wait'
-                                        : 'border-red-500 text-red-600 hover:bg-red-50'
-                                    }`}
-                                  >
-                                    {isDeleting ? 'Deleting…' : 'Delete'}
-                                  </button>
+                                  <div className="flex justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={handleShareReport}
+                                      disabled={isLoading || isDeleting}
+                                      className="inline-flex items-center gap-1 rounded border border-blue-600 px-3 py-1 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                                    >
+                                      <Share2 className="h-4 w-4" aria-hidden="true" />
+                                      Share
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        event.preventDefault();
+                                        if (isLoading || isDeleting) {
+                                          return;
+                                        }
+                                        handleDeleteReport(report);
+                                      }}
+                                      disabled={isLoading || isDeleting}
+                                      className={`rounded border px-3 py-1 text-sm font-semibold transition ${
+                                        isDeleting
+                                          ? 'border-gray-300 text-gray-400 cursor-wait'
+                                          : 'border-red-500 text-red-600 hover:bg-red-50'
+                                      }`}
+                                    >
+                                      {isDeleting ? 'Deleting…' : 'Delete'}
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             );
