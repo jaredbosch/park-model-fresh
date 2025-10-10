@@ -1,6 +1,6 @@
 # Mobile Home Park Model
 
-This project is a Create React App that models the operations of a mobile home park. It now includes Supabase-backed authentication and persistence so users can sign in, save their underwriting reports, and reload them later.
+This project is a Create React App that models the operations of a mobile home park. It now includes Supabase-backed authentication and persistence so users can sign in, save their underwriting reports, and reload them later..
 
 The app is deployed as a static React site and uses the `api/save-report.js` serverless function when running on Vercel.
 
