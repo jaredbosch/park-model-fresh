@@ -931,6 +931,9 @@ const MobileHomeParkModel = () => {
         error: sessionError,
       } = await supabase.auth.getSession();
 
+      console.log('Analytics session result:', session || null);
+      console.log('Analytics session error:', sessionError || null);
+
       if (sessionError) {
         if (sessionError?.status === 401) {
           setAnalyticsError('Please sign in again.');
@@ -941,6 +944,8 @@ const MobileHomeParkModel = () => {
 
       const user = session?.user;
 
+      console.log('Analytics session user:', user || null);
+
       if (!user) {
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
         setAnalyticsError('Please sign in again.');
@@ -948,10 +953,16 @@ const MobileHomeParkModel = () => {
         return;
       }
 
+      console.log('Analytics query params:', {
+        userId: user?.id || null,
+      });
+
       const { data, error } = await supabase
         .from('reports')
         .select('purchase_price, num_lots, cap_rate, total_expenses, total_income')
         .eq('user_id', user.id);
+
+      console.log('Analytics query error:', error || null);
 
       if (error) {
         if (error?.status === 401) {
