@@ -43,6 +43,11 @@ const LandingPage = ({ onTryItNow, supabase }) => {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
         setAuthMessage('Welcome back! You are now signed in.');
+        
+         // ⬇️ ADD THIS SNIPPET HERE
+        setTimeout(() => {
+         window.location.href = '/app';
+      }, 1000);
       } else {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
