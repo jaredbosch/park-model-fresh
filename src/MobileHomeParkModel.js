@@ -922,13 +922,20 @@ const MobileHomeParkModel = () => {
     setLoadingAnalytics(true);
     setAnalyticsError('');
 
+    let errorMessageSet = false;
+
     try {
+
       const {
         data: { session } = {},
         error: sessionError,
       } = await supabase.auth.getSession();
 
       if (sessionError) {
+        if (sessionError?.status === 401) {
+          setAnalyticsError('Please sign in again.');
+          errorMessageSet = true;
+        }
         throw sessionError;
       }
 
@@ -937,7 +944,8 @@ const MobileHomeParkModel = () => {
       if (!user) {
         console.warn('No user session found');
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
-        setAnalyticsError('');
+        setAnalyticsError('Please sign in again.');
+        errorMessageSet = true;
         setLoadingAnalytics(false);
         setAnalyticsInitialized(true);
         return;
@@ -949,15 +957,27 @@ const MobileHomeParkModel = () => {
         .eq('user_id', user.id);
 
       if (error) {
+        if (error?.status === 401) {
+          setAnalyticsError('Please sign in again.');
+          errorMessageSet = true;
+        }
         throw error;
       }
 
       const metrics = computeAnalyticsMetrics(data || []);
+
+      if (!data || data.length === 0) {
+        setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+        return;
+      }
+
       setAnalyticsMetrics(metrics);
     } catch (err) {
       console.error('Analytics fetch error:', err);
+      if (!errorMessageSet) {
+        setAnalyticsError('Unable to load analytics right now. Please try again.');
+      }
       setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
-      setAnalyticsError('Unable to load analytics right now. Please try again.');
     } finally {
       setLoadingAnalytics(false);
       setAnalyticsInitialized(true);
@@ -3067,7 +3087,7 @@ ${reportContent.innerHTML}
 
                   {analyticsMetrics.totalReports === 0 && !loadingAnalytics && (
                     <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">
-                      Save a report to populate your analytics dashboard.
+                      No reports found. Save a report to populate your analytics dashboard.
                     </div>
                   )}
                 </div>
