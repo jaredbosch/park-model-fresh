@@ -924,26 +924,29 @@ const MobileHomeParkModel = () => {
 
     try {
       const {
-        data: { user } = {},
-        error: userError,
-      } = await supabase.auth.getUser();
+        data: { session } = {},
+        error: sessionError,
+      } = await supabase.auth.getSession();
 
-      if (userError) {
-        throw userError;
+      if (sessionError) {
+        throw sessionError;
       }
 
-      const userId = user?.id;
+      const user = session?.user;
 
-      if (!userId) {
+      if (!user) {
+        console.warn('No user session found');
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
         setAnalyticsError('');
+        setLoadingAnalytics(false);
+        setAnalyticsInitialized(true);
         return;
       }
 
       const { data, error } = await supabase
         .from('reports')
         .select('purchase_price, num_lots, cap_rate, total_expenses, total_income')
-        .eq('user_id', userId);
+        .eq('user_id', user.id);
 
       if (error) {
         throw error;
