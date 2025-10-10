@@ -60,6 +60,58 @@ const resolveCity = (report, stateOverride = undefined) => {
   return typeof rawCity === 'string' ? rawCity.trim() : '';
 };
 
+const resolveState = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const rawState = state?.propertyInfo?.state || report?.park_state || '';
+  return typeof rawState === 'string' ? rawState.trim() : '';
+};
+
+const resolveSiteCount = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [
+    state?.propertyInfo?.totalLots,
+    state?.calculations?.totalUnits,
+    report?.total_lots,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+
+    if (typeof candidate === 'string') {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+};
+
+const slugify = (value) => {
+  if (!value) {
+    return 'report';
+  }
+
+  const slug = value
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || 'report';
+};
+
 const resolvePurchasePrice = (report, stateOverride = undefined) => {
   const state =
     stateOverride !== undefined
@@ -120,7 +172,8 @@ const DEFAULT_PROPERTY_INFO = {
   name: 'Mobile Home Park',
   address: '',
   city: '',
-  state: ''
+  state: '',
+  totalLots: '',
 };
 
 const DEFAULT_CONTACT_INFO = {
@@ -229,6 +282,7 @@ const MobileHomeParkModel = () => {
   const [selectedReportId, setSelectedReportId] = useState('');
   const [loadingReports, setLoadingReports] = useState(false);
   const [loadingReportId, setLoadingReportId] = useState(null);
+  const [deletingReportId, setDeletingReportId] = useState(null);
   const [reportName, setReportName] = useState('Mobile Home Park Report');
   const [quickPopulateRows, setQuickPopulateRows] = useState([
     {
@@ -325,6 +379,13 @@ const MobileHomeParkModel = () => {
           return compareText(resolveReportName(aReport), resolveReportName(bReport));
         case 'city':
           return compareText(resolveCity(aReport), resolveCity(bReport));
+        case 'state':
+          return compareText(resolveState(aReport), resolveState(bReport));
+        case 'sites':
+          return compareNumber(
+            resolveSiteCount(aReport),
+            resolveSiteCount(bReport)
+          );
         case 'price':
           return compareNumber(
             resolvePurchasePrice(aReport),
@@ -363,6 +424,31 @@ const MobileHomeParkModel = () => {
       '',
     [session]
   );
+
+  const preparedByContact = useMemo(() => {
+    const metadata = session?.user?.user_metadata || {};
+
+    const resolveString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+    const emailCandidates = [
+      contactInfo.email,
+      metadata.email,
+      metadata.email_address,
+      session?.user?.email,
+      sessionEmail,
+    ];
+
+    const resolvedEmail = emailCandidates
+      .map(resolveString)
+      .find((value) => Boolean(value)) || '';
+
+    return {
+      name: resolveString(contactInfo.name),
+      company: resolveString(contactInfo.company),
+      email: resolvedEmail,
+      phone: resolveString(contactInfo.phone),
+    };
+  }, [contactInfo, session, sessionEmail]);
 
   const hasValidQuickPopulateRows = useMemo(
     () =>
@@ -717,6 +803,46 @@ const MobileHomeParkModel = () => {
     }
   }, [session?.user, activeTab]);
 
+  useEffect(() => {
+    if (!session?.user) {
+      return;
+    }
+
+    const metadata = session.user.user_metadata || {};
+
+    setContactInfo((prev) => {
+      const next = { ...prev };
+      let changed = false;
+
+      const assignIfEmpty = (key, value) => {
+        if (next[key]) {
+          return;
+        }
+
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (trimmed) {
+            next[key] = trimmed;
+            changed = true;
+          }
+        }
+      };
+
+      assignIfEmpty('name', metadata.full_name || metadata.name || metadata.user_name);
+      assignIfEmpty('company', metadata.company || metadata.organization);
+      assignIfEmpty('phone', metadata.phone || metadata.phone_number || metadata.phoneNumber);
+      assignIfEmpty(
+        'email',
+        metadata.email ||
+          metadata.email_address ||
+          session.user.email ||
+          sessionEmail
+      );
+
+      return changed ? next : prev;
+    });
+  }, [session, sessionEmail]);
+
   const savedReportCount = savedReports.length;
 
   useEffect(() => {
@@ -823,14 +949,50 @@ const MobileHomeParkModel = () => {
         setUnits(resolvedUnits);
       }
 
+      const normaliseSiteCount = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return value;
+        }
+
+        if (typeof value === 'string') {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+
+        return null;
+      };
+
+      const fallbackSiteCount =
+        normaliseSiteCount(savedState?.propertyInfo?.totalLots) ??
+        normaliseSiteCount(savedState?.calculations?.totalUnits) ??
+        normaliseSiteCount(data.total_lots) ??
+        (Array.isArray(resolvedUnits) ? resolvedUnits.length : null);
+
       if (savedState?.propertyInfo) {
-        setPropertyInfo(savedState.propertyInfo);
+        setPropertyInfo((prev) => {
+          const next = {
+            ...prev,
+            ...savedState.propertyInfo,
+          };
+
+          if (
+            fallbackSiteCount !== null &&
+            (next.totalLots === undefined || next.totalLots === '' || !Number.isFinite(Number(next.totalLots)))
+          ) {
+            next.totalLots = fallbackSiteCount;
+          }
+
+          return next;
+        });
       } else {
         setPropertyInfo({
           name: data.report_name || data.park_name || DEFAULT_PROPERTY_INFO.name,
           address: data.park_address || '',
           city: data.park_city || '',
           state: data.park_state || '',
+          totalLots: fallbackSiteCount ?? '',
         });
       }
 
@@ -1933,6 +2095,14 @@ const MobileHomeParkModel = () => {
     return parts.join(' ');
   };
 
+  const proformaSnapshotYears = useMemo(() => {
+    const years = Array.isArray(calculations?.proformaYears)
+      ? calculations.proformaYears
+      : [];
+
+    return years.slice(0, Math.min(5, years.length));
+  }, [calculations]);
+
   const lastProformaYear =
     calculations.proformaYears.length > 0
       ? calculations.proformaYears[calculations.proformaYears.length - 1]
@@ -1990,6 +2160,7 @@ const MobileHomeParkModel = () => {
     .text-xl { font-size: 1.25rem; }
     .text-lg { font-size: 1.125rem; }
     .font-bold { font-weight: 700; }
+    .font-semibold { font-weight: 600; }
     .text-gray-900 { color: #111827; }
     .text-gray-700 { color: #374151; }
     .text-gray-600 { color: #4b5563; }
@@ -2037,6 +2208,7 @@ const MobileHomeParkModel = () => {
     .text-red-600 { color: #dc2626; }
     .text-orange-800 { color: #9a3412; }
     .text-indigo-700 { color: #4338ca; }
+    .break-words { overflow-wrap: anywhere; word-break: break-word; }
     .space-y-2 > * + * { margin-top: 0.5rem; }
     .space-y-3 > * + * { margin-top: 0.75rem; }
     .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
@@ -2066,6 +2238,21 @@ ${reportContent.innerHTML}
 </html>`;
   };
 
+  const ensurePreparedByInfo = useCallback(() => {
+    const missingFields = Object.entries(preparedByContact)
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+
+    if (missingFields.length > 0) {
+      alert(
+        'Please complete the Prepared By contact information (name, company, email, and phone) before saving the report.'
+      );
+      return { ok: false, contact: preparedByContact };
+    }
+
+    return { ok: true, contact: preparedByContact };
+  }, [preparedByContact]);
+
   const saveReportToAccount = useCallback(async ({ htmlContent, showAlert = true } = {}) => {
     if (!isSupabaseConfigured || !supabase) {
       alert('Supabase is not configured. Please add your Supabase credentials to enable saving reports.');
@@ -2091,13 +2278,15 @@ ${reportContent.innerHTML}
       return false;
     }
 
+    const { ok: hasPreparedInfo, contact: preparedContact } = ensurePreparedByInfo();
+    if (!hasPreparedInfo) {
+      return false;
+    }
+
     const effectiveReportName = (reportName && reportName.trim()) || propertyInfo.name || 'Untitled Report';
     const normalizedReportId = selectedReportId ? Number(selectedReportId) : null;
 
-    const effectiveContactInfo = {
-      ...contactInfo,
-      email: contactInfo?.email || sessionEmail || authUser?.email || '',
-    };
+    const effectiveContactInfo = preparedContact;
 
     const propertyDetails = {
       ...propertyInfo,
@@ -2259,6 +2448,7 @@ ${reportContent.innerHTML}
     expenseRatio,
     projectionYears,
     requireAuth,
+    ensurePreparedByInfo,
   ]);
 
   const downloadReport = async () => {
@@ -2275,6 +2465,11 @@ ${reportContent.innerHTML}
       return;
     }
 
+    const { ok: hasPreparedInfo } = ensurePreparedByInfo();
+    if (!hasPreparedInfo) {
+      return;
+    }
+
     const htmlContent = buildReportHtml();
     if (!htmlContent) {
       alert('Unable to capture report content for download.');
@@ -2285,7 +2480,9 @@ ${reportContent.innerHTML}
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mobile-home-park-analysis-${new Date().toISOString().split('T')[0]}.html`;
+    const effectiveReportName = (reportName && reportName.trim()) || propertyInfo.name || 'Untitled Report';
+    const datePart = new Date().toISOString().split('T')[0];
+    a.download = `${slugify(effectiveReportName)}-${datePart}.html`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2296,6 +2493,88 @@ ${reportContent.innerHTML}
       await saveReportToAccount({ htmlContent, showAlert: false });
     }
   };
+
+  const handleDeleteReport = useCallback(
+    async (reportIdString) => {
+      if (!reportIdString) {
+        return;
+      }
+
+      if (!isSupabaseConfigured || !supabase) {
+        alert('Supabase is not configured. Please add your Supabase credentials to delete saved reports.');
+        return;
+      }
+
+      const numericId = Number(reportIdString);
+      if (!Number.isFinite(numericId)) {
+        alert('Invalid report identifier.');
+        return;
+      }
+
+      const confirmed = window.confirm('Are you sure you want to delete this report? This action cannot be undone.');
+      if (!confirmed) {
+        return;
+      }
+
+      let authUser;
+      try {
+        authUser = await requireAuth();
+      } catch (err) {
+        if (err?.code === AUTH_REQUIRED_ERROR || err?.code === 'SUPABASE_NOT_CONFIGURED') {
+          return;
+        }
+
+        console.error('Error verifying authentication before deleting report:', err);
+        alert('Unable to verify your authentication status. Please try signing in again.');
+        return;
+      }
+
+      const ownerId = authUser?.id || session?.user?.id;
+      if (!ownerId) {
+        alert('Unable to confirm your account. Please sign in again and retry.');
+        return;
+      }
+
+      setDeletingReportId(reportIdString);
+
+      try {
+        const apiBase = process.env.REACT_APP_API_BASE || '';
+        const response = await fetch(`${apiBase}/api/delete-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reportId: numericId, userId: ownerId }),
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+          console.error('Failed to delete report:', result);
+          const detailMessage = result?.error || 'The report could not be deleted. Please try again.';
+          alert(detailMessage);
+          return;
+        }
+
+        if (selectedReportId === reportIdString) {
+          setSelectedReportId('');
+        }
+
+        await fetchSavedReports();
+      } catch (err) {
+        console.error('Unexpected error deleting report:', err);
+        alert('Failed to delete the report. Please try again.');
+      } finally {
+        setDeletingReportId(null);
+      }
+    },
+    [
+      fetchSavedReports,
+      isSupabaseConfigured,
+      requireAuth,
+      selectedReportId,
+      session,
+      supabase,
+    ]
+  );
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
@@ -2502,6 +2781,34 @@ ${reportContent.innerHTML}
                             <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
                               <button
                                 type="button"
+                                onClick={() => handleReportSort('state')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                State
+                                {reportSort.column === 'state' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('sites')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                # Sites
+                                {reportSort.column === 'sites' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
                                 onClick={() => handleReportSort('price')}
                                 className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
                               >
@@ -2527,6 +2834,12 @@ ${reportContent.innerHTML}
                                 )}
                               </button>
                             </th>
+                            <th
+                              scope="col"
+                              className="px-4 py-3 text-right text-sm font-semibold text-gray-700"
+                            >
+                              Actions
+                            </th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200">
@@ -2549,6 +2862,9 @@ ${reportContent.innerHTML}
                             const isLoading = loadingReportId === reportIdString;
                             const isSelected = selectedReportId && selectedReportId === reportIdString;
                             const cityValue = resolveCity(report, state) || '—';
+                            const stateValue = resolveState(report, state) || '—';
+                            const sitesValue = resolveSiteCount(report, state);
+                            const formattedSites = Number.isFinite(sitesValue) ? sitesValue : '—';
                             const rowBase = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
                             const rowState = isSelected ? 'bg-blue-50 text-blue-800' : rowBase;
                             const rowHover = isSelected ? '' : 'hover:bg-blue-50';
@@ -2570,6 +2886,8 @@ ${reportContent.innerHTML}
                                 loadReport(report);
                               }
                             };
+
+                            const isDeleting = deletingReportId === reportIdString;
 
                             return (
                               <tr
@@ -2595,10 +2913,37 @@ ${reportContent.innerHTML}
                                   {cityValue || '—'}
                                 </td>
                                 <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {stateValue || '—'}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {formattedSites}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
                                   {formattedPrice}
                                 </td>
                                 <td className="px-4 py-3 align-middle text-sm text-gray-700">
                                   {formattedDate}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-right">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      event.preventDefault();
+                                      if (isLoading || isDeleting) {
+                                        return;
+                                      }
+                                      handleDeleteReport(reportIdString);
+                                    }}
+                                    disabled={isLoading || isDeleting}
+                                    className={`rounded border px-3 py-1 text-sm font-semibold transition ${
+                                      isDeleting
+                                        ? 'border-gray-300 text-gray-400 cursor-wait'
+                                        : 'border-red-500 text-red-600 hover:bg-red-50'
+                                    }`}
+                                  >
+                                    {isDeleting ? 'Deleting…' : 'Delete'}
+                                  </button>
                                 </td>
                               </tr>
                             );
@@ -3945,6 +4290,9 @@ ${reportContent.innerHTML}
                     onChange={(e) => setContactInfo({...contactInfo, phone: e.target.value})}
                     className="p-2 border border-gray-300 rounded bg-white text-sm w-36"
                   />
+                  <p className="text-xs text-gray-500 w-full">
+                    These details populate the Prepared By section displayed in the report and exported file.
+                  </p>
                   <div className="flex flex-col w-56">
                     <label className="text-sm font-semibold text-gray-700 mb-1">Report Name</label>
                     <input
@@ -4000,6 +4348,46 @@ ${reportContent.innerHTML}
                     </p>
                   )}
                   <p className="text-gray-600 mt-3">Report Generated: {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                </div>
+
+                {/* Prepared By */}
+                <div className="mb-10">
+                  <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-300 pb-2 mb-4">Prepared By</h2>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Name</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {preparedByContact.name || '—'}
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Company</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {preparedByContact.company || '—'}
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Email</div>
+                      <div className="text-lg font-semibold text-gray-900 break-words">
+                        {preparedByContact.email ? (
+                          <a
+                            href={`mailto:${preparedByContact.email}`}
+                            style={{ color: '#1d4ed8', textDecoration: 'underline' }}
+                          >
+                            {preparedByContact.email}
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Phone</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {preparedByContact.phone || '—'}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Executive Summary */}
@@ -4105,6 +4493,248 @@ ${reportContent.innerHTML}
                     </div>
                   </div>
                 </div>
+
+                {proformaSnapshotYears.length > 0 && (
+                  <div className="mb-10">
+                    <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-300 pb-2 mb-4">
+                      Five-Year Proforma Summary
+                    </h2>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ background: 'linear-gradient(90deg, #2563eb, #1d4ed8)', color: '#ffffff' }}>
+                            <th
+                              style={{
+                                padding: '1rem',
+                                textAlign: 'left',
+                                fontWeight: 700,
+                                border: '1px solid #bfdbfe',
+                              }}
+                            >
+                              Metric
+                            </th>
+                            {proformaSnapshotYears.map((year) => (
+                              <th
+                                key={year.year}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  border: '1px solid #bfdbfe',
+                                }}
+                              >
+                                Year {year.year}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr style={{ backgroundColor: '#faf5ff' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Occupied Lots
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`occupied-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {year.occupiedUnits} / {calculations.totalUnits}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#f3e8ff' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Occupancy Rate
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`occupancy-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatPercent(year.occupancyRate)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#ffffff' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Avg Monthly Rent
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`rent-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.avgMonthlyRent)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#f8fafc' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Rent Growth Applied (per lot/month)
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`growth-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 600,
+                                  color: '#374151',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {describeRentIncrease(year)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#f0fdf4' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Lot Rent Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`lot-income-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.lotRentIncome)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#dcfce7' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Other Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`other-income-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.otherIncome)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#bbf7d0' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 700,
+                                color: '#14532d',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Total Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`total-income-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  color: '#15803d',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.totalIncome)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#fef2f2' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 600,
+                                color: '#b91c1c',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Operating Expenses
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`expenses-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 600,
+                                  color: '#b91c1c',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.expenses)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#dbeafe' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 700,
+                                color: '#1d4ed8',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Net Operating Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`noi-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  color: '#1d4ed8',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.noi)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#fff7ed' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#9a3412', border: '1px solid #d1d5db' }}>
+                              Debt Service
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`debt-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.debtService)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#fed7aa' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 700,
+                                color: '#9a3412',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Annual Cash Flow
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`cashflow-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  color: '#9a3412',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.cashFlow)}
+                              </td>
+                            ))}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* Investment Analysis */}
                 <div className="mb-10">
