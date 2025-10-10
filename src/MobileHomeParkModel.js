@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
 import { Download } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
 
 //const supabase = createClient(
 //  process.env.REACT_APP_SUPABASE_URL,
