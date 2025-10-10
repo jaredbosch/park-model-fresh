@@ -2257,7 +2257,7 @@ ${reportContent.innerHTML}
 
   const saveReportToAccount = useCallback(async ({ htmlContent } = {}) => {
     if (!isSupabaseConfigured || !supabase) {
-      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert('Supabase is not configured. Please add your Supabase credentials to enable saving reports.');
       return false;
     }
@@ -2271,14 +2271,14 @@ ${reportContent.innerHTML}
       }
 
       console.error('Error verifying Supabase authentication before saving:', err);
-      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert('Unable to verify your authentication status. Please try signing in again.');
       return false;
     }
 
     const finalHtml = htmlContent || buildReportHtml();
     if (!finalHtml) {
-      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert('Unable to capture the report content for saving.');
       return false;
     }
@@ -2384,7 +2384,7 @@ ${reportContent.innerHTML}
           detailParts.push(detailMessage);
         }
 
-        showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
+        showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
 
         alert(
           ['Failed to save the report to your account.', ...detailParts]
@@ -2417,7 +2417,7 @@ ${reportContent.innerHTML}
       }
 
       await fetchSavedReports();
-      showToast({ message: '💾 Report saved successfully.', tone: 'success' });
+      showToast({ message: '💾 Report saved to your account successfully.', tone: 'success' });
 
       return true;
     } catch (err) {
@@ -2427,7 +2427,7 @@ ${reportContent.innerHTML}
 
       console.error('Error saving report:', err);
       const message = err?.message ? `\n\n${err.message}` : '';
-      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert(`Failed to save the report to your account.${message}`);
       return false;
     } finally {

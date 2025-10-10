@@ -1,10 +1,8 @@
 const { createClient } = require('@supabase/supabase-js');
-const OpenAI = require('openai');
 const { Resend } = require('resend');
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const openaiApiKey = process.env.OPENAI_API_KEY;
 const resendApiKey = process.env.RESEND_API_KEY;
 const resendFromEmail = process.env.RESEND_FROM_EMAIL || '';
 const notificationEmailList = process.env.REPORT_NOTIFICATION_EMAILS || '';
@@ -191,8 +189,6 @@ const parseEmailList = (value) =>
 
 const staticNotificationEmails = parseEmailList(notificationEmailList);
 
-const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
-
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
 async function handler(req, res) {
@@ -217,17 +213,26 @@ async function handler(req, res) {
     const name = payload.reportName || payload.name || 'Untitled Report';
     const metadata = payload.reportState || payload.metadata || null;
 
-    if (html && html.length > 60000) {
-      const { error } = await supabase
+    if (html && html.length > 50000) {
+      const { data, error } = await supabase
         .from('reports')
-        .insert([{ html, name, user_id: payload.userId, metadata }]);
+        .insert([
+          {
+            html,
+            name,
+            metadata,
+            user_id: payload.userId,
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select();
 
       if (error) {
         console.error('Supabase insert error (large html):', error);
         return res.status(500).json({ success: false, error: error.message || 'Failed to save large report.' });
       }
 
-      return res.status(200).json({ success: true });
+      return res.status(200).json({ success: true, data });
     }
 
     const schemaStatus = await ensureReportsSchema();
@@ -242,20 +247,6 @@ async function handler(req, res) {
     }
 
     const ownerEmail = payload.contactInfo?.email || authUser.email || '';
-
-    // Build embedding text
-    const textToEmbed = `${payload.propertyInfo?.name || ''}, ${payload.propertyInfo?.state || ''}\n${payload.htmlContent || ''}`;
-
-    let embedding = null;
-    if (textToEmbed.trim() && openai) {
-      const embeddingResp = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: textToEmbed,
-      });
-      embedding = embeddingResp.data[0].embedding;
-    } else if (textToEmbed.trim() && !openai) {
-      console.warn('OPENAI_API_KEY is not set. Embeddings will be skipped.');
-    }
 
     const reportState =
       payload.reportState && typeof payload.reportState === 'object'
@@ -320,7 +311,6 @@ async function handler(req, res) {
       income_items: payload.additionalIncome || [],
       expense_items: payload.expenses || [],
       additional_income: payload.additionalIncome || [],
-      embedding,
       expense_ratio: payload.expenseRatio,
       projection_years: payload.projectionYears,
     };
@@ -350,7 +340,11 @@ async function handler(req, res) {
         return query.select();
       }
 
-      return supabase.from('reports').insert([dataToPersist]).select();
+      const nowIso = new Date().toISOString();
+      return supabase
+        .from('reports')
+        .insert([{ ...dataToPersist, created_at: nowIso }])
+        .select();
     };
 
     let data;
