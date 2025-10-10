@@ -135,6 +135,7 @@ const DEFAULT_PURCHASE_INPUTS = {
   closingCosts: 25000,
   downPaymentPercent: 25,
   interestRate: 6.5,
+  amortizationYears: 25,
   loanTermYears: 25,
   interestOnlyPeriodYears: 0,
 };
@@ -885,6 +886,10 @@ const MobileHomeParkModel = () => {
           downPaymentPercent:
             data.down_payment_percent ?? DEFAULT_PURCHASE_INPUTS.downPaymentPercent,
           interestRate: data.interest_rate ?? DEFAULT_PURCHASE_INPUTS.interestRate,
+          amortizationYears:
+            data.amortization_years ??
+            data.loan_term_years ??
+            DEFAULT_PURCHASE_INPUTS.amortizationYears,
           loanTermYears: data.loan_term_years ?? DEFAULT_PURCHASE_INPUTS.loanTermYears,
           interestOnlyPeriodYears:
             data.interest_only_period_years ?? DEFAULT_PURCHASE_INPUTS.interestOnlyPeriodYears,
@@ -1454,14 +1459,22 @@ const MobileHomeParkModel = () => {
     const loanAmount = totalInvestment - downPayment;
     const annualRate = purchaseInputs.interestRate / 100;
     const monthlyRate = annualRate / 12;
+    const amortizationYears = Number(purchaseInputs.amortizationYears) || 0;
+    const amortizationMonthsTotal = Math.max(Math.round(amortizationYears * 12), 0);
     const totalTermYears = Number(purchaseInputs.loanTermYears) || 0;
     const totalTermMonths = Math.max(Math.round(totalTermYears * 12), 0);
-    const interestOnlyYears = Math.max(
-      0,
-      Math.min(Number(purchaseInputs.interestOnlyPeriodYears) || 0, totalTermYears)
+    const requestedInterestOnlyYears = Number(purchaseInputs.interestOnlyPeriodYears) || 0;
+    const maxInterestOnlyYears = amortizationYears > 0
+      ? Math.min(totalTermYears, amortizationYears)
+      : totalTermYears;
+    const interestOnlyYears = Math.max(0, Math.min(requestedInterestOnlyYears, maxInterestOnlyYears));
+    const interestOnlyMonths = Math.min(
+      Math.round(interestOnlyYears * 12),
+      totalTermMonths,
+      amortizationMonthsTotal > 0 ? amortizationMonthsTotal : totalTermMonths
     );
-    const interestOnlyMonths = Math.min(Math.round(interestOnlyYears * 12), totalTermMonths);
-    const amortizationMonths = Math.max(totalTermMonths - interestOnlyMonths, 0);
+    const amortizationMonthsForPayment =
+      amortizationMonthsTotal > 0 ? Math.max(amortizationMonthsTotal - interestOnlyMonths, 0) : 0;
 
     let interestOnlyMonthlyPayment = 0;
     if (loanAmount > 0) {
@@ -1469,12 +1482,12 @@ const MobileHomeParkModel = () => {
     }
 
     let amortizingMonthlyPayment = 0;
-    if (loanAmount > 0 && amortizationMonths > 0) {
+    if (loanAmount > 0 && amortizationMonthsForPayment > 0) {
       if (monthlyRate > 0) {
-        const factor = Math.pow(1 + monthlyRate, amortizationMonths);
+        const factor = Math.pow(1 + monthlyRate, amortizationMonthsForPayment);
         amortizingMonthlyPayment = (loanAmount * monthlyRate * factor) / (factor - 1);
       } else {
-        amortizingMonthlyPayment = loanAmount / amortizationMonths;
+        amortizingMonthlyPayment = loanAmount / amortizationMonthsForPayment;
       }
     } else if (loanAmount > 0) {
       amortizingMonthlyPayment = interestOnlyMonthlyPayment;
@@ -1502,7 +1515,7 @@ const MobileHomeParkModel = () => {
         interestPayment = remainingBalance * monthlyRate;
         if (withinInterestOnly) {
           payment = interestOnlyMonthlyPayment;
-        } else if (amortizationMonths > 0) {
+        } else if (amortizationMonthsForPayment > 0) {
           payment = amortizingMonthlyPayment;
         } else {
           payment = interestPayment;
@@ -1511,7 +1524,7 @@ const MobileHomeParkModel = () => {
         interestPayment = 0;
         if (withinInterestOnly) {
           payment = 0;
-        } else if (amortizationMonths > 0) {
+        } else if (amortizationMonthsForPayment > 0) {
           payment = amortizingMonthlyPayment;
         } else {
           payment = 0;
@@ -1574,6 +1587,10 @@ const MobileHomeParkModel = () => {
       annualDebtServiceSchedule[0]?.totalPayment ||
       loanSchedule.slice(0, 12).reduce((sum, entry) => sum + entry.payment, 0);
     const firstMonthPayment = loanSchedule[0]?.payment || 0;
+    const maturityBalance =
+      loanSchedule.length > 0
+        ? loanSchedule[loanSchedule.length - 1]?.remainingBalance ?? loanAmount
+        : loanAmount;
 
     // 5/7/10-Year Proforma Calculations
     const projectionCount = Number.isFinite(Number(projectionYears))
@@ -1853,6 +1870,9 @@ const MobileHomeParkModel = () => {
       interestOnlyMonthlyPayment,
       postInterestOnlyMonthlyPayment: amortizingMonthlyPayment,
       interestOnlyPeriodYears: interestOnlyYears,
+      loanMaturityBalance: maturityBalance,
+      amortizationYears,
+      loanTermYears: totalTermYears,
       projectionYears: projectionCount,
     };
   }, [
@@ -2098,6 +2118,7 @@ ${reportContent.innerHTML}
       interestOnlyMonthlyPayment: calculations.interestOnlyMonthlyPayment,
       postInterestOnlyMonthlyPayment: calculations.postInterestOnlyMonthlyPayment,
       annualDebtServiceSchedule: calculations.annualDebtServiceSchedule,
+      loanMaturityBalance: calculations.loanMaturityBalance,
     };
 
     const reportState = {
@@ -3252,7 +3273,7 @@ ${reportContent.innerHTML}
               {/* Financing Inputs */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">Financing Terms</h3>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Down Payment %</label>
                     <input
@@ -3278,6 +3299,20 @@ ${reportContent.innerHTML}
                       type="number"
                       value={purchaseInputs.loanTermYears}
                       onChange={(e) => setPurchaseInputs({...purchaseInputs, loanTermYears: Number(e.target.value)})}
+                      className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Amortization (Years)</label>
+                    <input
+                      type="number"
+                      value={purchaseInputs.amortizationYears}
+                      onChange={(e) =>
+                        setPurchaseInputs({
+                          ...purchaseInputs,
+                          amortizationYears: Number(e.target.value),
+                        })
+                      }
                       className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
                     />
                   </div>
@@ -4112,6 +4147,14 @@ ${reportContent.innerHTML}
                         <div className="flex justify-between py-2 border-b border-gray-200">
                           <span className="text-gray-700">Loan Term:</span>
                           <span className="font-semibold">{purchaseInputs.loanTermYears} years</span>
+                        </div>
+                        <div className="flex justify-between py-2 border-b border-gray-200">
+                          <span className="text-gray-700">Amortization:</span>
+                          <span className="font-semibold">{purchaseInputs.amortizationYears} years</span>
+                        </div>
+                        <div className="flex justify-between py-2">
+                          <span className="text-gray-700">Balloon Balance at Maturity:</span>
+                          <span className="font-semibold">{formatCurrency(calculations.loanMaturityBalance)}</span>
                         </div>
                       </div>
                     </div>
