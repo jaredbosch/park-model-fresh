@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -53,11 +53,18 @@ function ProtectedRoute({ children }) {
 }
 
 export default function App() {
+  const handleTryItNow = () => {
+    window.location.href = "/app";
+  };
+
   return (
     <Router>
       <Routes>
-        {/* Landing page */}
-        <Route path="/" element={<LandingPage />} />
+        {/* Landing page now receives Supabase client */}
+        <Route
+          path="/"
+          element={<LandingPage onTryItNow={handleTryItNow} supabase={supabase} />}
+        />
 
         {/* Auth-protected app */}
         <Route
