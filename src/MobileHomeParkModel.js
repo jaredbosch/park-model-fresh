@@ -1,13 +1,377 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Download } from 'lucide-react';
+import supabase, { isSupabaseConfigured } from './supabaseClient';
+import AuthModal from './components/AuthModal';
 
-//const supabase = createClient(
-//  process.env.REACT_APP_SUPABASE_URL,
-//  process.env.REACT_APP_SUPABASE_ANON_KEY
-;
+const normaliseReportState = (state) => {
+  if (!state) {
+    return null;
+  }
+
+  if (typeof state === 'object') {
+    return state;
+  }
+
+  if (typeof state === 'string') {
+    try {
+      return JSON.parse(state);
+    } catch (err) {
+      console.warn('Unable to parse saved report_state JSON:', err);
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const resolveReportName = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const rawName =
+    state?.reportName ||
+    state?.propertyInfo?.name ||
+    report?.report_name ||
+    report?.park_name ||
+    '';
+
+  const trimmed = typeof rawName === 'string' ? rawName.trim() : '';
+
+  return trimmed || 'Untitled Report';
+};
+
+const resolvePropertyName = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const rawName = state?.propertyInfo?.name || report?.park_name || '';
+  return typeof rawName === 'string' && rawName.trim() ? rawName.trim() : '—';
+};
+
+const resolveCity = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const rawCity = state?.propertyInfo?.city || report?.park_city || '';
+  return typeof rawCity === 'string' ? rawCity.trim() : '';
+};
+
+const resolvePurchasePrice = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const valueCandidates = [
+    report?.purchase_price,
+    state?.purchaseInputs?.purchasePrice,
+  ];
+
+  for (const candidate of valueCandidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+
+    if (typeof candidate === 'string') {
+      const parsed = Number(candidate);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+};
+
+const resolveReportDateValue = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const candidates = [
+    report?.created_at,
+    report?.updated_at,
+    state?.savedAt,
+    state?.createdAt,
+    state?.updatedAt,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const date = new Date(candidate);
+    const timestamp = date.getTime();
+
+    if (!Number.isNaN(timestamp)) {
+      return timestamp;
+    }
+  }
+
+  return null;
+};
+
+const DEFAULT_PROPERTY_INFO = {
+  name: 'Mobile Home Park',
+  address: '',
+  city: '',
+  state: ''
+};
+
+const DEFAULT_CONTACT_INFO = {
+  name: '',
+  email: '',
+  phone: '',
+  company: ''
+};
+
+const DEFAULT_PURCHASE_INPUTS = {
+  purchasePrice: 850000,
+  closingCosts: 25000,
+  downPaymentPercent: 25,
+  interestRate: 6.5,
+  loanTermYears: 25,
+  interestOnlyPeriodYears: 0,
+};
+
+const DEFAULT_IRR_INPUTS = {
+  holdPeriod: 5,
+  exitCapRate: 7.5
+};
+
+const DEFAULT_EXPENSES = [
+  { id: 1, name: 'Property Tax', amount: 18000 },
+  { id: 2, name: 'Insurance', amount: 12000 },
+  { id: 3, name: 'Utilities', amount: 8400 },
+  { id: 4, name: 'Maintenance & Repairs', amount: 15000 },
+  { id: 5, name: 'Advertising & Marketing', amount: 2400 },
+  { id: 6, name: 'Legal & Professional', amount: 3000 },
+  { id: 7, name: 'Administrative', amount: 5000 },
+  { id: 8, name: 'Payroll', amount: 0 },
+];
+
+const createDefaultExpenses = () =>
+  DEFAULT_EXPENSES.map((expense) => ({ ...expense }));
+
+const DEFAULT_PROFORMA_INPUTS = {
+  year1NewLeases: 7,
+  year2NewLeases: 5,
+  year3NewLeases: 5,
+  year4NewLeases: 5,
+  year5NewLeases: 5,
+  year1RentIncreaseValue: 0,
+  year1RentIncreaseMode: 'percent',
+  year2RentIncreaseValue: 0,
+  year2RentIncreaseMode: 'percent',
+  annualRentIncrease: 3,
+  annualRentIncreaseMode: 'percent',
+  annualExpenseIncrease: 2.5
+};
+
+const normaliseProformaInputs = (inputs = {}) => ({
+  ...DEFAULT_PROFORMA_INPUTS,
+  ...inputs,
+});
+
+const INCOME_CATEGORY_OPTIONS = [
+  'Lot Rent',
+  'Home Rent',
+  'Utility Reimbursement',
+  'Laundry',
+  'Late Fees',
+  'Other Income',
+];
+
+const EXPENSE_CATEGORY_OPTIONS = [
+  'Property Tax',
+  'Insurance',
+  'Utilities',
+  'Repairs & Maintenance',
+  'Payroll',
+  'Management Fee',
+  'Advertising & Marketing',
+  'Legal & Professional',
+  'Administrative',
+  'Other Expense',
+];
+
+const AUTH_REQUIRED_ERROR = 'AUTH_REQUIRED';
+
+const generateUniqueLabel = (baseLabel, existingLabels = []) => {
+  const trimmedBase = baseLabel && typeof baseLabel === 'string' ? baseLabel.trim() : '';
+  const fallback = trimmedBase || 'New Item';
+
+  if (!existingLabels.includes(fallback)) {
+    return fallback;
+  }
+
+  let counter = 2;
+  let candidate = `${fallback} (${counter})`;
+
+  while (existingLabels.includes(candidate)) {
+    counter += 1;
+    candidate = `${fallback} (${counter})`;
+  }
+
+  return candidate;
+};
 const MobileHomeParkModel = () => {
+  const [session, setSession] = useState(null);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [savedReports, setSavedReports] = useState([]);
+  const [reportSort, setReportSort] = useState({ column: 'date', direction: 'desc' });
+  const [selectedReportId, setSelectedReportId] = useState('');
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [loadingReportId, setLoadingReportId] = useState(null);
+  const [reportName, setReportName] = useState('Mobile Home Park Report');
+  const [quickPopulateRows, setQuickPopulateRows] = useState([
+    {
+      id: 1,
+      numberOfLots: '',
+      rentAmount: '',
+      occupancyStatus: 'occupied',
+    },
+  ]);
+  const quickPopulateIdRef = useRef(2);
+  const [vacantTargetLots, setVacantTargetLots] = useState('');
+
   const [activeTab, setActiveTab] = useState('rent-roll');
-  
+
+  const formatReportDate = useCallback((value) => {
+    if (!value) {
+      return '';
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+
+    return date.toLocaleDateString('en-US', {
+      month: '2-digit',
+      day: '2-digit',
+      year: 'numeric',
+    });
+  }, []);
+
+  const sortedReports = useMemo(() => {
+    if (!Array.isArray(savedReports)) {
+      return [];
+    }
+
+    const items = [...savedReports];
+
+    const { column, direction } = reportSort;
+    const multiplier = direction === 'asc' ? 1 : -1;
+
+    const compareText = (aValue, bValue) => {
+      const aText = (aValue || '').toString().toLowerCase();
+      const bText = (bValue || '').toString().toLowerCase();
+
+      if (aText === bText) {
+        return 0;
+      }
+
+      return aText > bText ? multiplier : -multiplier;
+    };
+
+    const compareNumber = (aValue, bValue) => {
+      const aNum = Number.isFinite(aValue) ? aValue : null;
+      const bNum = Number.isFinite(bValue) ? bValue : null;
+
+      if (aNum === bNum) {
+        return 0;
+      }
+
+      if (aNum === null) {
+        return multiplier;
+      }
+
+      if (bNum === null) {
+        return -multiplier;
+      }
+
+      return aNum > bNum ? multiplier : -multiplier;
+    };
+
+    const compareDate = (aReport, bReport) => {
+      const aDate = resolveReportDateValue(aReport);
+      const bDate = resolveReportDateValue(bReport);
+
+      if (aDate === bDate) {
+        return 0;
+      }
+
+      if (aDate === null) {
+        return multiplier;
+      }
+
+      if (bDate === null) {
+        return -multiplier;
+      }
+
+      return aDate > bDate ? multiplier : -multiplier;
+    };
+
+    items.sort((aReport, bReport) => {
+      switch (column) {
+        case 'name':
+          return compareText(resolveReportName(aReport), resolveReportName(bReport));
+        case 'city':
+          return compareText(resolveCity(aReport), resolveCity(bReport));
+        case 'price':
+          return compareNumber(
+            resolvePurchasePrice(aReport),
+            resolvePurchasePrice(bReport)
+          );
+        case 'date':
+        default:
+          return compareDate(aReport, bReport);
+      }
+    });
+
+    return items;
+  }, [reportSort, savedReports]);
+
+  const handleReportSort = useCallback((column) => {
+    setReportSort((prev) => {
+      if (prev.column === column) {
+        return {
+          column,
+          direction: prev.direction === 'asc' ? 'desc' : 'asc',
+        };
+      }
+
+      return {
+        column,
+        direction: column === 'date' ? 'desc' : 'asc',
+      };
+    });
+  }, []);
+
+  const sessionEmail = useMemo(
+    () =>
+      session?.user?.email ||
+      session?.user?.user_metadata?.email ||
+      session?.user?.user_metadata?.email_address ||
+      '',
+    [session]
+  );
+
+  const hasValidQuickPopulateRows = useMemo(
+    () =>
+      quickPopulateRows.some((row) => {
+        const lots = parseInt(row.numberOfLots, 10);
+        return Number.isFinite(lots) && lots > 0;
+      }),
+    [quickPopulateRows]
+  );
+
   // Rent Roll Inputs
   const [units, setUnits] = useState(() => {
     const initialUnits = [];
@@ -25,20 +389,63 @@ const MobileHomeParkModel = () => {
 
   const [selectedUnits, setSelectedUnits] = useState([]);
 
+  const quickPopulatePreview = useMemo(() => {
+    if (!Array.isArray(units) || units.length === 0) {
+      return {
+        totalLots: 0,
+        occupiedLots: 0,
+        averageRent: 0,
+        totalRentIncome: 0,
+      };
+    }
+
+    let occupiedLots = 0;
+    let occupiedRentSum = 0;
+    const occupiedRentValues = [];
+
+    units.forEach((unit) => {
+      if (!unit) {
+        return;
+      }
+
+      const rentValue = Number(unit.rent);
+
+      if (unit.occupied) {
+        occupiedLots += 1;
+
+        if (Number.isFinite(rentValue) && rentValue > 0) {
+          occupiedRentValues.push(rentValue);
+          occupiedRentSum += rentValue;
+        } else if (Number.isFinite(rentValue)) {
+          occupiedRentSum += Math.max(rentValue, 0);
+        }
+      }
+    });
+
+    const averageRent =
+      occupiedRentValues.length > 0
+        ? occupiedRentValues.reduce((sum, value) => sum + value, 0) /
+          occupiedRentValues.length
+        : 0;
+
+    return {
+      totalLots: units.length,
+      occupiedLots,
+      averageRent,
+      totalRentIncome: occupiedRentSum * 12,
+    };
+  }, [units]);
+
+  const parsedVacantTarget = useMemo(() => {
+    const target = parseInt(vacantTargetLots, 10);
+    return Number.isFinite(target) ? target : null;
+  }, [vacantTargetLots]);
+  const canVacantRemaining = parsedVacantTarget !== null && parsedVacantTarget > units.length;
+
   // Property Information
-  const [propertyInfo, setPropertyInfo] = useState({
-    name: 'Mobile Home Park',
-    address: '',
-    city: '',
-    state: ''
-  });
+  const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
   // Contact info for saving reports (ensure defined to avoid runtime ReferenceError)
-  const [contactInfo, setContactInfo] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    company: ''
-  });
+  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
   const [savingReport, setSavingReport] = useState(false);
   
   // Additional Income Inputs
@@ -47,48 +454,582 @@ const MobileHomeParkModel = () => {
     { id: 2, name: 'Rental Home Income', amount: 12000 },
     { id: 3, name: 'Late Fees', amount: 1200 },
   ]);
-  
+  const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
+    INCOME_CATEGORY_OPTIONS[0]
+  );
+
   const [useActualIncome, setUseActualIncome] = useState(false);
   const [actualIncome, setActualIncome] = useState(0);
-  
+
   // Operating Expense Inputs
-  const [expenses, setExpenses] = useState([
-    { id: 1, name: 'Property Tax', amount: 18000 },
-    { id: 2, name: 'Insurance', amount: 12000 },
-    { id: 3, name: 'Utilities', amount: 8400 },
-    { id: 4, name: 'Maintenance & Repairs', amount: 15000 },
-    { id: 5, name: 'Advertising & Marketing', amount: 2400 },
-    { id: 6, name: 'Legal & Professional', amount: 3000 },
-    { id: 7, name: 'Administrative', amount: 5000 },
-  ]);
-  
+  const [expenses, setExpenses] = useState(() => createDefaultExpenses());
+  const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
+    EXPENSE_CATEGORY_OPTIONS[0]
+  );
+
   const [managementPercent, setManagementPercent] = useState(5);
-  
+  const [expenseRatio, setExpenseRatio] = useState(0);
+
   // Purchase & Financing Inputs
-  const [purchaseInputs, setPurchaseInputs] = useState({
-    purchasePrice: 850000,
-    closingCosts: 25000,
-    downPaymentPercent: 25,
-    interestRate: 6.5,
-    loanTermYears: 25
-  });
+  const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
 
   // IRR Inputs
-  const [irrInputs, setIrrInputs] = useState({
-    holdPeriod: 5,
-    exitCapRate: 7.5
-  });
+  const [irrInputs, setIrrInputs] = useState(() => ({ ...DEFAULT_IRR_INPUTS }));
 
   // Proforma Inputs
-  const [proformaInputs, setProformaInputs] = useState({
-    year1NewLeases: 7,
-    year2NewLeases: 5,
-    year3NewLeases: 5,
-    year4NewLeases: 5,
-    year5NewLeases: 5,
-    annualRentIncrease: 3,
-    annualExpenseIncrease: 2.5
-  });
+  const [proformaInputs, setProformaInputs] = useState(() => normaliseProformaInputs());
+  const [projectionYears, setProjectionYears] = useState(5);
+
+  const fetchSavedReports = useCallback(
+    async ({ sessionOverride, accessToken, userId } = {}) => {
+      if (!isSupabaseConfigured || !supabase) {
+        return;
+      }
+
+      const activeSession = sessionOverride || session;
+      const effectiveUserId = userId || activeSession?.user?.id || null;
+      const effectiveAccessToken =
+        accessToken || activeSession?.access_token || null;
+
+      if (!effectiveUserId) {
+        setSavedReports([]);
+        return;
+      }
+
+      const effectiveEmail =
+        activeSession?.user?.email ||
+        activeSession?.user?.user_metadata?.email ||
+        activeSession?.user?.user_metadata?.email_address ||
+        sessionEmail ||
+        '';
+
+      setLoadingReports(true);
+
+      const apiBase = process.env.REACT_APP_API_BASE || '';
+
+      try {
+        if (effectiveAccessToken) {
+          try {
+            const response = await fetch(`${apiBase}/api/list-reports`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accessToken: effectiveAccessToken }),
+            });
+
+            let payload = null;
+            try {
+              payload = await response.json();
+            } catch (parseError) {
+              console.error('Unable to parse saved reports response JSON:', parseError);
+            }
+
+            if (response.ok && payload?.success && Array.isArray(payload.data)) {
+              const warnings = Array.isArray(payload?.warnings)
+                ? payload.warnings.filter(Boolean)
+                : [];
+
+              warnings.forEach((warning) =>
+                console.warn('Saved reports retrieved with warning:', warning)
+              );
+
+              setSavedReports(payload.data);
+              return;
+            }
+
+            if (payload?.warnings) {
+              payload.warnings
+                .filter(Boolean)
+                .forEach((warning) =>
+                  console.warn('Saved reports API warning:', warning)
+                );
+            }
+
+            const apiErrorMessage =
+              payload?.error || response.statusText || 'Unknown list reports error';
+            console.warn(
+              'Falling back to direct Supabase query for saved reports:',
+              apiErrorMessage
+            );
+          } catch (apiError) {
+            console.error('Error fetching saved reports via API:', apiError);
+          }
+        }
+
+        const columnVariants = [
+          'id, report_name, park_name, created_at, updated_at, user_id, user_email, report_state',
+          'id, report_name, park_name, created_at, updated_at, user_email, report_state',
+          'id, report_name, park_name, created_at, updated_at, report_state',
+          'id, park_name, created_at, updated_at, report_state',
+          'id, park_name, created_at, updated_at',
+          'id, park_name, created_at',
+        ];
+
+        const filterStrategies = [];
+
+        if (effectiveUserId) {
+          filterStrategies.push({
+            label: 'user_id',
+            apply: (query) => query.eq('user_id', effectiveUserId),
+          });
+        }
+
+        if (effectiveEmail) {
+          filterStrategies.push({
+            label: 'user_email',
+            apply: (query) => query.eq('user_email', effectiveEmail),
+          });
+        }
+
+        filterStrategies.push({
+          label: 'none',
+          apply: (query) => query,
+        });
+
+        for (const columns of columnVariants) {
+          for (const strategy of filterStrategies) {
+            try {
+              let query = supabase
+                .from('reports')
+                .select(columns)
+                .order('updated_at', { ascending: false })
+                .order('created_at', { ascending: false });
+
+              query = strategy.apply(query);
+
+              const { data, error } = await query;
+
+              if (error) {
+                if (error.code === '42703') {
+                  console.warn(
+                    `Supabase reports query skipped due to missing column (strategy: ${strategy.label}, columns: ${columns}).`,
+                    error.message || error
+                  );
+                  continue;
+                }
+
+                if (error.code === '42501' || /permission denied/i.test(`${error.message} ${error.details}`)) {
+                  console.error(
+                    'Supabase Row Level Security prevented listing saved reports. Ensure select policies allow authenticated users to view their own data.',
+                    error.message || error
+                  );
+                  break;
+                }
+
+                console.error('Error fetching saved reports:', error);
+                continue;
+              }
+
+              if (!Array.isArray(data)) {
+                continue;
+              }
+
+              let resolvedData = data;
+
+              if (strategy.label === 'none' && effectiveUserId) {
+                resolvedData = data.filter((row) => {
+                  const state = row?.report_state;
+                  const ownerId =
+                    (state && (state.ownerUserId || state.userId || state.sessionUserId)) || null;
+                  return ownerId === effectiveUserId;
+                });
+              }
+
+              if (resolvedData.length === 0 && strategy.label !== 'none') {
+                continue;
+              }
+
+              setSavedReports(resolvedData);
+              return;
+            } catch (strategyError) {
+              console.error('Unexpected error executing Supabase report fetch strategy:', strategyError);
+            }
+          }
+        }
+
+        setSavedReports([]);
+      } catch (err) {
+        console.error('Unexpected error fetching saved reports:', err);
+      } finally {
+        setLoadingReports(false);
+      }
+    },
+    [session, sessionEmail]
+  );
+
+  const fetchSavedReportsRef = useRef(fetchSavedReports);
+
+  useEffect(() => {
+    fetchSavedReportsRef.current = fetchSavedReports;
+  }, [fetchSavedReports]);
+
+  const sessionUserId = session?.user?.id || null;
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      setSession(null);
+      return;
+    }
+
+    let subscription;
+
+    const initialiseSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        setSession(data?.session || null);
+      } catch (err) {
+        console.error('Error initialising Supabase session:', err);
+      }
+    };
+
+    initialiseSession();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      if (newSession?.user?.id) {
+        setAuthModalOpen(false);
+      } else {
+        setSavedReports((current) => (current.length > 0 ? [] : current));
+        setSelectedReportId('');
+      }
+    });
+
+    subscription = listener?.subscription;
+
+    return () => {
+      subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionUserId) {
+      setSavedReports((current) => (current.length > 0 ? [] : current));
+      setSelectedReportId('');
+      return;
+    }
+
+    fetchSavedReportsRef.current();
+  }, [sessionUserId]);
+
+  useEffect(() => {
+    if (!session?.user && activeTab === 'my-reports') {
+      setActiveTab('rent-roll');
+    }
+  }, [session?.user, activeTab]);
+
+  const savedReportCount = savedReports.length;
+
+  useEffect(() => {
+    if (activeTab !== 'my-reports') {
+      return;
+    }
+
+    if (!sessionUserId) {
+      return;
+    }
+
+    if (loadingReports) {
+      return;
+    }
+
+    if (savedReportCount > 0) {
+      return;
+    }
+
+    fetchSavedReportsRef.current();
+  }, [activeTab, sessionUserId, loadingReports, savedReportCount]);
+
+  useEffect(() => {
+    if (!propertyInfo.name) {
+      return;
+    }
+
+    if (reportName === '' || reportName === 'Mobile Home Park Report') {
+      setReportName(propertyInfo.name);
+    }
+  }, [propertyInfo.name, reportName]);
+
+  const handleRefreshReports = useCallback(() => {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    fetchSavedReportsRef.current();
+  }, [session]);
+
+  const handleSignOut = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      return;
+    }
+
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error('Error signing out of Supabase:', err);
+    } finally {
+      setSession(null);
+      setSavedReports([]);
+      setSelectedReportId('');
+      setLoadingReportId(null);
+      setReportName('Mobile Home Park Report');
+      setReportSort({ column: 'date', direction: 'desc' });
+    }
+  }, []);
+
+  const requireAuth = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      alert('Supabase is not configured. Please add your Supabase credentials to enable this feature.');
+      const error = new Error('Supabase is not configured');
+      error.code = 'SUPABASE_NOT_CONFIGURED';
+      throw error;
+    }
+
+    const { data, error } = await supabase.auth.getUser();
+
+    if (error || !data?.user) {
+      setAuthModalOpen(true);
+      alert('Please sign in to continue.');
+      const authError = new Error(error?.message || 'User not authenticated');
+      authError.code = AUTH_REQUIRED_ERROR;
+      throw authError;
+    }
+
+    return data.user;
+  }, [setAuthModalOpen]);
+
+  const loadReportData = useCallback(
+    (data, { reportIdString } = {}) => {
+      if (!data || typeof data !== 'object') {
+        return false;
+      }
+
+      const normaliseCollection = (value) => {
+        if (Array.isArray(value)) {
+          return value;
+        }
+        if (value && typeof value === 'object') {
+          return Object.values(value);
+        }
+        return null;
+      };
+
+      const savedState =
+        data.report_state && typeof data.report_state === 'object'
+          ? data.report_state
+          : null;
+
+      const resolvedUnits = savedState?.units || normaliseCollection(data.rent_roll);
+      if (Array.isArray(resolvedUnits) && resolvedUnits.length > 0) {
+        setUnits(resolvedUnits);
+      }
+
+      if (savedState?.propertyInfo) {
+        setPropertyInfo(savedState.propertyInfo);
+      } else {
+        setPropertyInfo({
+          name: data.report_name || data.park_name || DEFAULT_PROPERTY_INFO.name,
+          address: data.park_address || '',
+          city: data.park_city || '',
+          state: data.park_state || '',
+        });
+      }
+
+      if (savedState?.contactInfo) {
+        setContactInfo(savedState.contactInfo);
+      } else {
+        setContactInfo({
+          name: data.user_name || '',
+          email: data.user_email || sessionEmail || '',
+          phone: data.user_phone || '',
+          company: data.user_company || '',
+        });
+      }
+
+      if (Array.isArray(savedState?.additionalIncome)) {
+        setAdditionalIncome(savedState.additionalIncome);
+      } else {
+        const incomeItems = normaliseCollection(data.additional_income);
+        if (Array.isArray(incomeItems) && incomeItems.length > 0) {
+          setAdditionalIncome(incomeItems);
+        }
+      }
+
+      let nextExpenses = null;
+      if (Array.isArray(savedState?.expenses)) {
+        nextExpenses = savedState.expenses;
+      } else {
+        const expenseItems = normaliseCollection(data.expense_items);
+        if (Array.isArray(expenseItems) && expenseItems.length > 0) {
+          nextExpenses = expenseItems;
+        }
+      }
+
+      if (Array.isArray(nextExpenses)) {
+        setExpenses(nextExpenses);
+      } else {
+        setExpenses(createDefaultExpenses());
+      }
+
+      if (typeof savedState?.managementPercent === 'number') {
+        setManagementPercent(savedState.managementPercent);
+      }
+
+      if (savedState?.purchaseInputs) {
+        setPurchaseInputs({
+          ...DEFAULT_PURCHASE_INPUTS,
+          ...savedState.purchaseInputs,
+        });
+      } else {
+        setPurchaseInputs({
+          purchasePrice: data.purchase_price ?? DEFAULT_PURCHASE_INPUTS.purchasePrice,
+          closingCosts: data.closing_costs ?? DEFAULT_PURCHASE_INPUTS.closingCosts,
+          downPaymentPercent:
+            data.down_payment_percent ?? DEFAULT_PURCHASE_INPUTS.downPaymentPercent,
+          interestRate: data.interest_rate ?? DEFAULT_PURCHASE_INPUTS.interestRate,
+          loanTermYears: data.loan_term_years ?? DEFAULT_PURCHASE_INPUTS.loanTermYears,
+          interestOnlyPeriodYears:
+            data.interest_only_period_years ?? DEFAULT_PURCHASE_INPUTS.interestOnlyPeriodYears,
+        });
+      }
+
+      if (typeof savedState?.expenseRatio === 'number') {
+        setExpenseRatio(savedState.expenseRatio);
+      } else if (typeof data.expense_ratio === 'number') {
+        setExpenseRatio(data.expense_ratio);
+      } else {
+        setExpenseRatio(0);
+      }
+
+      if (savedState?.irrInputs) {
+        setIrrInputs(savedState.irrInputs);
+      }
+
+      if (savedState?.proformaInputs) {
+        setProformaInputs(normaliseProformaInputs(savedState.proformaInputs));
+      }
+
+      if (typeof savedState?.projectionYears === 'number') {
+        setProjectionYears(savedState.projectionYears);
+      } else if (typeof data.projection_years === 'number') {
+        setProjectionYears(data.projection_years);
+      } else {
+        setProjectionYears(5);
+      }
+
+      if (typeof savedState?.useActualIncome === 'boolean') {
+        setUseActualIncome(savedState.useActualIncome);
+      }
+
+      if (typeof savedState?.actualIncome === 'number') {
+        setActualIncome(savedState.actualIncome);
+      }
+
+      setSelectedUnits([]);
+
+      const resolvedReportIdString =
+        reportIdString ||
+        (data.id !== undefined && data.id !== null ? String(data.id) : '');
+
+      if (resolvedReportIdString) {
+        setSelectedReportId(resolvedReportIdString);
+      }
+
+      setReportName(
+        savedState?.reportName ||
+          data.report_name ||
+          data.park_name ||
+          reportName ||
+          'Mobile Home Park Report'
+      );
+      setActiveTab(savedState?.activeTab || 'rent-roll');
+
+      return true;
+    },
+    [reportName, sessionEmail]
+  );
+
+  const loadReport = useCallback(
+    async (report) => {
+      if (!isSupabaseConfigured || !supabase) {
+        alert('Supabase is not configured. Please add your Supabase credentials to enable loading reports.');
+        return;
+      }
+
+      if (!session?.user?.id) {
+        setAuthModalOpen(true);
+        return;
+      }
+
+      const resolvedReportId =
+        (report && typeof report === 'object' ? report.id : report) || null;
+
+      if (!resolvedReportId) {
+        alert('Unable to load the selected report.');
+        return;
+      }
+
+      const reportIdString = String(resolvedReportId);
+      setLoadingReportId(reportIdString);
+
+      const apiBase = process.env.REACT_APP_API_BASE || '';
+      const accessToken = session?.access_token || null;
+
+      try {
+        const response = await fetch(`${apiBase}/api/load-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reportId: resolvedReportId, accessToken }),
+        });
+
+        let payload = null;
+
+        try {
+          payload = await response.json();
+        } catch (parseError) {
+          console.error('Unable to parse load report response JSON:', parseError);
+        }
+
+        if (payload?.warnings) {
+          payload.warnings
+            .filter(Boolean)
+            .forEach((warning) =>
+              console.warn('Load report warning:', warning)
+            );
+        }
+
+        if (!response.ok || !payload?.success || !payload?.data) {
+          const message = payload?.error || response.statusText || 'Unable to load the selected report.';
+
+          if (response.status === 404 || /not found/i.test(message)) {
+            alert('Report not found.');
+            return;
+          }
+
+          console.error('Error loading saved report:', {
+            status: response.status,
+            message,
+            details: payload?.details || null,
+          });
+          alert('Unable to load the selected report.');
+          return;
+        }
+
+        const applied = loadReportData(payload.data, { reportIdString });
+
+        if (!applied) {
+          alert('Unable to load the selected report.');
+          return;
+        }
+
+        alert('Report loaded successfully.');
+      } catch (err) {
+        console.error('Unexpected error loading report:', err);
+        alert('Unable to load the selected report.');
+      } finally {
+        setLoadingReportId(null);
+      }
+    },
+    [loadReportData, session]
+  );
 
   // Add/Remove units
   const addUnit = () => {
@@ -166,190 +1107,596 @@ const MobileHomeParkModel = () => {
       alert('Please enter a valid rent amount');
       return;
     }
-    setUnits(units.map(u => 
+    setUnits(units.map(u =>
       selectedUnits.includes(u.id) ? { ...u, rent: rentValue } : u
     ));
     setSelectedUnits([]);
   };
 
+  const addQuickPopulateRow = useCallback(() => {
+    setQuickPopulateRows((prev) => [
+      ...prev,
+      {
+        id: quickPopulateIdRef.current++,
+        numberOfLots: '',
+        rentAmount: '',
+        occupancyStatus: 'occupied',
+      },
+    ]);
+  }, []);
+
+  const updateQuickPopulateRow = useCallback((id, field, value) => {
+    setQuickPopulateRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, [field]: value } : row))
+    );
+  }, []);
+
+  const removeQuickPopulateRow = useCallback((id) => {
+    setQuickPopulateRows((prev) => {
+      if (prev.length === 1) {
+        return prev;
+      }
+
+      return prev.filter((row) => row.id !== id);
+    });
+  }, []);
+
+  const applyQuickPopulate = useCallback(() => {
+    const groups = quickPopulateRows
+      .map((row) => {
+        const lots = parseInt(row.numberOfLots, 10);
+        if (!Number.isFinite(lots) || lots <= 0) {
+          return null;
+        }
+
+        const rentValue = parseFloat(row.rentAmount);
+
+        return {
+          lots,
+          rent: Number.isFinite(rentValue) && rentValue >= 0 ? rentValue : 0,
+          occupied: row.occupancyStatus === 'occupied',
+        };
+      })
+      .filter(Boolean);
+
+    if (groups.length === 0) {
+      alert('Add at least one valid quick populate row before applying.');
+      return;
+    }
+
+    let appendedCount = 0;
+    let resultingLength = null;
+
+    setUnits((prevUnits) => {
+      let highestLotNumber = 0;
+      let maxId = 0;
+
+      prevUnits.forEach((unit) => {
+        if (!unit) {
+          return;
+        }
+
+        const numericLot = parseInt(unit.lotNumber, 10);
+        if (Number.isFinite(numericLot) && numericLot > highestLotNumber) {
+          highestLotNumber = numericLot;
+        }
+
+        const numericId =
+          typeof unit.id === 'number'
+            ? unit.id
+            : parseInt(String(unit.id), 10);
+
+        if (Number.isFinite(numericId) && numericId > maxId) {
+          maxId = numericId;
+        }
+      });
+
+      if (!Number.isFinite(highestLotNumber) || highestLotNumber < prevUnits.length) {
+        highestLotNumber = prevUnits.length;
+      }
+
+      let nextId = maxId > 0 ? maxId + 1 : 1;
+      const generatedUnits = [];
+
+      groups.forEach((group) => {
+        for (let i = 0; i < group.lots; i += 1) {
+          highestLotNumber += 1;
+          generatedUnits.push({
+            id: nextId,
+            lotNumber: `${highestLotNumber}`,
+            tenant: group.occupied ? 'Occupied' : 'Vacant',
+            rent: group.rent,
+            occupied: group.occupied,
+          });
+          nextId += 1;
+        }
+      });
+
+      appendedCount = generatedUnits.length;
+
+      if (appendedCount === 0) {
+        resultingLength = prevUnits.length;
+        return prevUnits;
+      }
+
+      const updatedUnits = [...prevUnits, ...generatedUnits];
+      resultingLength = updatedUnits.length;
+      return updatedUnits;
+    });
+
+    setSelectedUnits([]);
+
+    if (appendedCount > 0 && Number.isFinite(resultingLength)) {
+      setVacantTargetLots(String(resultingLength));
+    }
+  }, [quickPopulateRows]);
+
+  const clearRentRoll = useCallback(() => {
+    setUnits([]);
+    setSelectedUnits([]);
+    setVacantTargetLots('');
+    setQuickPopulateRows([
+      {
+        id: 1,
+        numberOfLots: '',
+        rentAmount: '',
+        occupancyStatus: 'occupied',
+      },
+    ]);
+    quickPopulateIdRef.current = 2;
+  }, []);
+
+  const vacantRemainingLots = useCallback(() => {
+    const target = parseInt(vacantTargetLots, 10);
+
+    if (!Number.isFinite(target) || target <= 0) {
+      alert('Enter a valid total lot count before filling remaining lots.');
+      return;
+    }
+
+    if (target <= units.length) {
+      alert('Total lots must be greater than the current number of rows.');
+      return;
+    }
+
+    setUnits((prevUnits) => {
+      let highestLotNumber = 0;
+      let maxId = 0;
+
+      prevUnits.forEach((unit) => {
+        if (!unit) {
+          return;
+        }
+
+        const numericLot = parseInt(unit.lotNumber, 10);
+        if (Number.isFinite(numericLot) && numericLot > highestLotNumber) {
+          highestLotNumber = numericLot;
+        }
+
+        const numericId =
+          typeof unit.id === 'number'
+            ? unit.id
+            : parseInt(String(unit.id), 10);
+
+        if (Number.isFinite(numericId) && numericId > maxId) {
+          maxId = numericId;
+        }
+      });
+
+      if (!Number.isFinite(highestLotNumber) || highestLotNumber < prevUnits.length) {
+        highestLotNumber = prevUnits.length;
+      }
+
+      let nextId = maxId > 0 ? maxId + 1 : 1;
+      const updatedUnits = [...prevUnits];
+
+      while (updatedUnits.length < target) {
+        highestLotNumber += 1;
+        updatedUnits.push({
+          id: nextId,
+          lotNumber: `${highestLotNumber}`,
+          tenant: 'Vacant',
+          rent: 0,
+          occupied: false,
+        });
+        nextId += 1;
+      }
+
+      return updatedUnits;
+    });
+
+    setSelectedUnits([]);
+    setVacantTargetLots(String(target));
+  }, [units.length, vacantTargetLots]);
+
   // Additional Income Functions
-  const addIncomeItem = () => {
-    const newId = Math.max(...additionalIncome.map(i => i.id), 0) + 1;
-    setAdditionalIncome([...additionalIncome, {
-      id: newId,
-      name: 'New Income',
-      amount: 0
-    }]);
-  };
+  const addIncomeItem = useCallback(() => {
+    setAdditionalIncome((prev) => {
+      const nextId = prev.reduce((maxId, item) => {
+        const numericId = Number(item?.id);
+        if (Number.isFinite(numericId)) {
+          return Math.max(maxId, numericId);
+        }
+        return maxId;
+      }, 0) + 1;
 
-  const removeIncomeItem = (id) => {
-    setAdditionalIncome(additionalIncome.filter(i => i.id !== id));
-  };
+      const existingNames = prev.map((item) => item?.name).filter(Boolean);
+      const label = generateUniqueLabel(
+        selectedIncomeCategory || 'New Income',
+        existingNames
+      );
 
-  const updateIncomeItem = (id, field, value) => {
-    setAdditionalIncome(additionalIncome.map(i => 
-      i.id === id ? { ...i, [field]: value } : i
-    ));
-  };
+      return [
+        ...prev,
+        {
+          id: nextId,
+          name: label,
+          amount: 0,
+        },
+      ];
+    });
+  }, [selectedIncomeCategory]);
+
+  const removeIncomeItem = useCallback((id) => {
+    setAdditionalIncome((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const updateIncomeItem = useCallback((id, field, value) => {
+    setAdditionalIncome((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
+  }, []);
+
+  const clearIncomeItems = useCallback(() => {
+    setAdditionalIncome((prev) => {
+      if (prev.length === 0) {
+        return prev;
+      }
+
+      const confirmed = window.confirm('Clear all income line items?');
+      return confirmed ? [] : prev;
+    });
+  }, []);
 
   // Expense Functions
-  const addExpenseItem = () => {
-    const newId = Math.max(...expenses.map(e => e.id), 0) + 1;
-    setExpenses([...expenses, {
-      id: newId,
-      name: 'New Expense',
-      amount: 0
-    }]);
-  };
+  const addExpenseItem = useCallback(() => {
+    setExpenses((prev) => {
+      const nextId = prev.reduce((maxId, expense) => {
+        const numericId = Number(expense?.id);
+        if (Number.isFinite(numericId)) {
+          return Math.max(maxId, numericId);
+        }
+        return maxId;
+      }, 0) + 1;
 
-  const removeExpenseItem = (id) => {
-    if (expenses.length > 1) {
-      setExpenses(expenses.filter(e => e.id !== id));
-    }
-  };
+      const existingNames = prev.map((expense) => expense?.name).filter(Boolean);
+      const label = generateUniqueLabel(
+        selectedExpenseCategory || 'New Expense',
+        existingNames
+      );
 
-  const updateExpenseItem = (id, field, value) => {
-    setExpenses(expenses.map(e => 
-      e.id === id ? { ...e, [field]: value } : e
-    ));
-  };
+      return [
+        ...prev,
+        {
+          id: nextId,
+          name: label,
+          amount: 0,
+        },
+      ];
+    });
+  }, [selectedExpenseCategory]);
+
+  const removeExpenseItem = useCallback((id) => {
+    setExpenses((prev) => prev.filter((expense) => expense.id !== id));
+  }, []);
+
+  const updateExpenseItem = useCallback((id, field, value) => {
+    setExpenses((prev) =>
+      prev.map((expense) =>
+        expense.id === id ? { ...expense, [field]: value } : expense
+      )
+    );
+  }, []);
+
+  const clearExpenseItems = useCallback(() => {
+    setExpenses((prev) => {
+      if (prev.length === 0) {
+        return prev;
+      }
+
+      const confirmed = window.confirm('Clear all expense line items?');
+      return confirmed ? [] : prev;
+    });
+  }, []);
 
   // Calculations
   const calculations = useMemo(() => {
     // Rent Roll Metrics
     const totalUnits = units.length;
-    const occupiedUnits = units.filter(u => u.occupied).length;
-    const physicalOccupancy = (occupiedUnits / totalUnits) * 100;
+    const occupiedUnits = units.filter((u) => u.occupied).length;
+    const physicalOccupancy = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0;
     const grossPotentialRent = units.reduce((sum, u) => sum + Number(u.rent), 0) * 12;
-    const rentRollIncome = units.filter(u => u.occupied).reduce((sum, u) => sum + Number(u.rent), 0) * 12;
-    
+    const rentRollIncome =
+      units.filter((u) => u.occupied).reduce((sum, u) => sum + Number(u.rent), 0) * 12;
+
     // Determine which income to use
     const lotRentIncome = useActualIncome ? Number(actualIncome) : rentRollIncome;
-    
+
     // Additional Income
-    const totalAdditionalIncome = additionalIncome.reduce((sum, i) => sum + Number(i.amount), 0);
-    
+    const totalAdditionalIncome = additionalIncome.reduce(
+      (sum, item) => sum + Number(item.amount),
+      0
+    );
+
     // Total Income
     const effectiveGrossIncome = lotRentIncome + totalAdditionalIncome;
     const vacancyLoss = grossPotentialRent - lotRentIncome;
-    const economicOccupancy = (lotRentIncome / grossPotentialRent) * 100;
+    const economicOccupancy = grossPotentialRent > 0 ? (lotRentIncome / grossPotentialRent) * 100 : 0;
 
     // Operating Expenses
     const managementFee = effectiveGrossIncome * (managementPercent / 100);
-    const totalExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
-    const totalOpEx = totalExpenses;
-    
+    const detailedExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
+    const ratioValue = Number(expenseRatio);
+    const expenseRatioPercent = Number.isFinite(ratioValue) ? Math.max(ratioValue, 0) : 0;
+    const useExpenseRatioOverride = expenseRatioPercent > 0;
+    const totalOpEx = useExpenseRatioOverride
+      ? effectiveGrossIncome * (expenseRatioPercent / 100)
+      : detailedExpenses;
+    const totalExpenses = totalOpEx;
+
     // NOI
     const noi = effectiveGrossIncome - totalOpEx;
     const capRate = (noi / purchaseInputs.purchasePrice) * 100;
-    
+
     // Financing
     const totalInvestment = purchaseInputs.purchasePrice + purchaseInputs.closingCosts;
     const downPayment = totalInvestment * (purchaseInputs.downPaymentPercent / 100);
     const loanAmount = totalInvestment - downPayment;
-    const monthlyRate = purchaseInputs.interestRate / 100 / 12;
-    const numPayments = purchaseInputs.loanTermYears * 12;
-    const monthlyPayment = loanAmount * (monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / 
-                          (Math.pow(1 + monthlyRate, numPayments) - 1);
-    const annualDebtService = monthlyPayment * 12;
-    
-    // Cash Flow
-    const cashFlow = noi - annualDebtService;
-    const cashOnCash = (cashFlow / downPayment) * 100;
-    const dscr = noi / annualDebtService;
-    
-    // Per Unit Metrics
-    const incomePerUnit = effectiveGrossIncome / totalUnits;
-    const expensePerUnit = totalOpEx / totalUnits;
-    const noiPerUnit = noi / totalUnits;
-    
-    // IRR Calculation
-    const holdPeriod = irrInputs.holdPeriod;
-    const exitCapRate = irrInputs.exitCapRate / 100;
-    const exitValue = noi / exitCapRate;
-    
-    // Calculate remaining loan balance at exit
-    const monthsHeld = holdPeriod * 12;
-    const remainingPayments = numPayments - monthsHeld;
-    const remainingBalance = remainingPayments > 0 
-      ? loanAmount * ((Math.pow(1 + monthlyRate, numPayments) - Math.pow(1 + monthlyRate, monthsHeld)) / 
-        (Math.pow(1 + monthlyRate, numPayments) - 1))
-      : 0;
-    
-    const exitProceeds = exitValue - remainingBalance;
-    const totalCashInvested = downPayment;
-    
-    // Calculate IRR using Newton-Raphson method
-    const calculateIRR = () => {
-      const cashFlows = [-totalCashInvested];
-      for (let i = 1; i <= holdPeriod; i++) {
-        if (i < holdPeriod) {
-          cashFlows.push(cashFlow);
+    const annualRate = purchaseInputs.interestRate / 100;
+    const monthlyRate = annualRate / 12;
+    const totalTermYears = Number(purchaseInputs.loanTermYears) || 0;
+    const totalTermMonths = Math.max(Math.round(totalTermYears * 12), 0);
+    const interestOnlyYears = Math.max(
+      0,
+      Math.min(Number(purchaseInputs.interestOnlyPeriodYears) || 0, totalTermYears)
+    );
+    const interestOnlyMonths = Math.min(Math.round(interestOnlyYears * 12), totalTermMonths);
+    const amortizationMonths = Math.max(totalTermMonths - interestOnlyMonths, 0);
+
+    let interestOnlyMonthlyPayment = 0;
+    if (loanAmount > 0) {
+      interestOnlyMonthlyPayment = monthlyRate > 0 ? loanAmount * monthlyRate : 0;
+    }
+
+    let amortizingMonthlyPayment = 0;
+    if (loanAmount > 0 && amortizationMonths > 0) {
+      if (monthlyRate > 0) {
+        const factor = Math.pow(1 + monthlyRate, amortizationMonths);
+        amortizingMonthlyPayment = (loanAmount * monthlyRate * factor) / (factor - 1);
+      } else {
+        amortizingMonthlyPayment = loanAmount / amortizationMonths;
+      }
+    } else if (loanAmount > 0) {
+      amortizingMonthlyPayment = interestOnlyMonthlyPayment;
+    }
+
+    const loanSchedule = [];
+    let remainingBalance = loanAmount;
+
+    for (let month = 1; month <= totalTermMonths; month += 1) {
+      if (remainingBalance <= 0) {
+        loanSchedule.push({
+          payment: 0,
+          interestPayment: 0,
+          principalPayment: 0,
+          remainingBalance: 0,
+        });
+        continue;
+      }
+
+      const withinInterestOnly = month <= interestOnlyMonths;
+      let payment = 0;
+      let interestPayment = 0;
+
+      if (monthlyRate > 0) {
+        interestPayment = remainingBalance * monthlyRate;
+        if (withinInterestOnly) {
+          payment = interestOnlyMonthlyPayment;
+        } else if (amortizationMonths > 0) {
+          payment = amortizingMonthlyPayment;
         } else {
-          cashFlows.push(cashFlow + exitProceeds);
+          payment = interestPayment;
+        }
+      } else {
+        interestPayment = 0;
+        if (withinInterestOnly) {
+          payment = 0;
+        } else if (amortizationMonths > 0) {
+          payment = amortizingMonthlyPayment;
+        } else {
+          payment = 0;
         }
       }
-      
-      let rate = 0.1;
-      const maxIterations = 100;
-      const tolerance = 0.0001;
-      
-      for (let i = 0; i < maxIterations; i++) {
-        let npv = 0;
-        let dnpv = 0;
-        
-        for (let j = 0; j < cashFlows.length; j++) {
-          npv += cashFlows[j] / Math.pow(1 + rate, j);
-          dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
-        }
-        
-        const newRate = rate - npv / dnpv;
-        
-        if (Math.abs(newRate - rate) < tolerance) {
-          return newRate * 100;
-        }
-        
-        rate = newRate;
+
+      let principalPayment = payment - interestPayment;
+
+      if (!Number.isFinite(principalPayment) || principalPayment < 0) {
+        principalPayment = 0;
       }
-      
-      return rate * 100;
-    };
-    
-    const irr = calculateIRR();
-    const equityMultiple = (exitProceeds + (cashFlow * holdPeriod)) / totalCashInvested;
-    
-    // 5-Year Proforma Calculations
+
+      if (principalPayment > remainingBalance) {
+        principalPayment = remainingBalance;
+        payment = interestPayment + principalPayment;
+      }
+
+      remainingBalance = Math.max(0, remainingBalance - principalPayment);
+
+      loanSchedule.push({
+        payment,
+        interestPayment,
+        principalPayment,
+        remainingBalance,
+      });
+    }
+
+    const annualDebtServiceSchedule = [];
+    if (totalTermMonths > 0) {
+      const totalYears = Math.ceil(totalTermMonths / 12);
+      for (let yearIndex = 0; yearIndex < totalYears; yearIndex += 1) {
+        const start = yearIndex * 12;
+        const payments = loanSchedule.slice(start, start + 12);
+        if (payments.length === 0) {
+          break;
+        }
+
+        const totalPayment = payments.reduce((sum, entry) => sum + entry.payment, 0);
+        const totalInterestPaid = payments.reduce(
+          (sum, entry) => sum + entry.interestPayment,
+          0
+        );
+        const totalPrincipalPaid = payments.reduce(
+          (sum, entry) => sum + entry.principalPayment,
+          0
+        );
+        const endingBalance = payments[payments.length - 1]?.remainingBalance ?? 0;
+
+        annualDebtServiceSchedule.push({
+          year: yearIndex + 1,
+          totalPayment,
+          totalInterest: totalInterestPaid,
+          totalPrincipal: totalPrincipalPaid,
+          endingBalance,
+        });
+      }
+    }
+
+    const firstYearDebtService =
+      annualDebtServiceSchedule[0]?.totalPayment ||
+      loanSchedule.slice(0, 12).reduce((sum, entry) => sum + entry.payment, 0);
+    const firstMonthPayment = loanSchedule[0]?.payment || 0;
+
+    // 5/7/10-Year Proforma Calculations
+    const projectionCount = Number.isFinite(Number(projectionYears))
+      ? Math.max(Number(projectionYears), 1)
+      : 5;
+
     const calculateProforma = () => {
       const years = [];
       let currentOccupiedUnits = occupiedUnits;
-      let currentRent = lotRentIncome / (occupiedUnits || 1) / 12; // Average monthly rent per occupied unit
+      const baseRent = occupiedUnits > 0 ? lotRentIncome / occupiedUnits / 12 : 0;
+      let currentRent = Number.isFinite(baseRent) ? baseRent : 0;
       let currentOtherIncome = totalAdditionalIncome;
-      let currentExpenses = totalOpEx;
-      
-      for (let year = 1; year <= 5; year++) {
-        // Add new leases
-        let newLeases = 0;
-        if (year === 1) newLeases = proformaInputs.year1NewLeases;
-        if (year === 2) newLeases = proformaInputs.year2NewLeases;
-        if (year === 3) newLeases = proformaInputs.year3NewLeases;
-        if (year === 4) newLeases = proformaInputs.year4NewLeases;
-        if (year === 5) newLeases = proformaInputs.year5NewLeases;
-        
-        currentOccupiedUnits = Math.min(currentOccupiedUnits + newLeases, totalUnits);
-        
-        // Apply rent increase
-        if (year > 1) {
-          currentRent = currentRent * (1 + proformaInputs.annualRentIncrease / 100);
-          currentOtherIncome = currentOtherIncome * (1 + proformaInputs.annualRentIncrease / 100);
-          currentExpenses = currentExpenses * (1 + proformaInputs.annualExpenseIncrease / 100);
+      let currentExpensesValue = totalOpEx;
+
+      const resolveMode = (mode) =>
+        mode === 'dollar' || mode === 'flat' ? 'dollar' : 'percent';
+
+      const toNumber = (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
+      const applyRentIncrease = (rent, value, mode) => {
+        const safeBase = Number.isFinite(rent) ? rent : 0;
+        const increaseValue = toNumber(value);
+        const resolvedMode = resolveMode(mode);
+
+        if (!increaseValue) {
+          return {
+            nextRent: safeBase,
+            amountChange: 0,
+            percentChange: 0,
+            mode: 'none',
+          };
         }
-        
+
+        if (resolvedMode === 'dollar') {
+          const nextRentRaw = safeBase + increaseValue;
+          const nextRent = Math.max(0, nextRentRaw);
+          const amountChange = nextRent - safeBase;
+          const percentChange = safeBase !== 0 ? (amountChange / safeBase) * 100 : null;
+
+          return {
+            nextRent,
+            amountChange,
+            percentChange,
+            mode: 'dollar',
+          };
+        }
+
+        const percent = increaseValue;
+        const nextRentRaw = safeBase * (1 + percent / 100);
+        const nextRent = Math.max(0, nextRentRaw);
+        const amountChange = nextRent - safeBase;
+
+        return {
+          nextRent,
+          amountChange,
+          percentChange: percent,
+          mode: 'percent',
+        };
+      };
+
+      for (let year = 1; year <= projectionCount; year += 1) {
+        let newLeases = 0;
+        if (year === 1) newLeases = toNumber(proformaInputs.year1NewLeases);
+        else if (year === 2) newLeases = toNumber(proformaInputs.year2NewLeases);
+        else if (year === 3) newLeases = toNumber(proformaInputs.year3NewLeases);
+        else if (year === 4) newLeases = toNumber(proformaInputs.year4NewLeases);
+        else if (year === 5) newLeases = toNumber(proformaInputs.year5NewLeases);
+
+        currentOccupiedUnits = Math.min(currentOccupiedUnits + newLeases, totalUnits);
+
+        let appliedIncrease;
+        if (year === 1) {
+          appliedIncrease = applyRentIncrease(
+            currentRent,
+            proformaInputs.year1RentIncreaseValue,
+            proformaInputs.year1RentIncreaseMode
+          );
+        } else if (year === 2) {
+          appliedIncrease = applyRentIncrease(
+            currentRent,
+            proformaInputs.year2RentIncreaseValue,
+            proformaInputs.year2RentIncreaseMode
+          );
+        } else {
+          appliedIncrease = applyRentIncrease(
+            currentRent,
+            proformaInputs.annualRentIncrease,
+            proformaInputs.annualRentIncreaseMode
+          );
+        }
+
+        currentRent = appliedIncrease.nextRent;
+
+        if (appliedIncrease.percentChange !== null && appliedIncrease.percentChange !== 0) {
+          currentOtherIncome =
+            currentOtherIncome * (1 + appliedIncrease.percentChange / 100);
+        }
+
         const yearLotRent = currentRent * currentOccupiedUnits * 12;
         const yearTotalIncome = yearLotRent + currentOtherIncome;
-        const yearNOI = yearTotalIncome - currentExpenses;
-        const yearCashFlow = yearNOI - annualDebtService;
-        const yearOccupancy = (currentOccupiedUnits / totalUnits) * 100;
-        
+
+        let yearExpensesValue;
+        if (useExpenseRatioOverride) {
+          yearExpensesValue = yearTotalIncome * (expenseRatioPercent / 100);
+          currentExpensesValue = yearExpensesValue;
+        } else {
+          if (year > 1) {
+            currentExpensesValue =
+              currentExpensesValue *
+              (1 + toNumber(proformaInputs.annualExpenseIncrease) / 100);
+          }
+          yearExpensesValue = currentExpensesValue;
+        }
+
+        const yearNOI = yearTotalIncome - yearExpensesValue;
+        const yearDebtEntry = annualDebtServiceSchedule[year - 1] || null;
+        const yearDebtService = yearDebtEntry ? yearDebtEntry.totalPayment : 0;
+        const yearCashFlow = yearNOI - yearDebtService;
+        const yearOccupancy = totalUnits > 0 ? (currentOccupiedUnits / totalUnits) * 100 : 0;
+
         years.push({
           year,
           occupiedUnits: currentOccupiedUnits,
@@ -358,18 +1705,117 @@ const MobileHomeParkModel = () => {
           lotRentIncome: yearLotRent,
           otherIncome: currentOtherIncome,
           totalIncome: yearTotalIncome,
-          expenses: currentExpenses,
+          expenses: yearExpensesValue,
           noi: yearNOI,
-          debtService: annualDebtService,
-          cashFlow: yearCashFlow
+          debtService: yearDebtService,
+          cashFlow: yearCashFlow,
+          rentIncreaseAmount: appliedIncrease.amountChange,
+          rentIncreasePercent: appliedIncrease.percentChange,
+          rentIncreaseMode: appliedIncrease.mode,
         });
       }
-      
+
       return years;
     };
-    
+
     const proformaYears = calculateProforma();
-    
+    const firstYearData = proformaYears[0] || null;
+
+    const annualDebtService = firstYearData?.debtService ?? firstYearDebtService;
+    const monthlyPayment = firstYearData ? firstYearData.debtService / 12 : firstMonthPayment;
+    const cashFlow = firstYearData ? firstYearData.cashFlow : noi - annualDebtService;
+    const cashOnCash = downPayment > 0 ? (cashFlow / downPayment) * 100 : 0;
+    const dscr = annualDebtService > 0 ? noi / annualDebtService : 0;
+
+    // Per Unit Metrics
+    const incomePerUnit = totalUnits > 0 ? effectiveGrossIncome / totalUnits : 0;
+    const expensePerUnit = totalUnits > 0 ? totalOpEx / totalUnits : 0;
+    const noiPerUnit = totalUnits > 0 ? noi / totalUnits : 0;
+
+    // IRR Calculation
+    const holdPeriod = Number(irrInputs.holdPeriod) || 0;
+    const exitCapRate = irrInputs.exitCapRate / 100;
+    const exitValue = exitCapRate > 0 ? noi / exitCapRate : 0;
+
+    const monthsHeld = Math.round(holdPeriod * 12);
+    let remainingBalanceAtExit = loanAmount;
+    if (loanSchedule.length > 0) {
+      if (monthsHeld <= 0) {
+        remainingBalanceAtExit = loanAmount;
+      } else if (monthsHeld <= loanSchedule.length) {
+        remainingBalanceAtExit = loanSchedule[monthsHeld - 1].remainingBalance;
+      } else {
+        remainingBalanceAtExit = 0;
+      }
+    }
+
+    const exitProceeds = exitValue - remainingBalanceAtExit;
+    const totalCashInvested = downPayment;
+
+    const calculateIRR = () => {
+      if (holdPeriod <= 0) {
+        return 0;
+      }
+
+      const cashFlows = [-totalCashInvested];
+      for (let year = 1; year <= holdPeriod; year += 1) {
+        const index = Math.min(year - 1, proformaYears.length - 1);
+        const yearData = index >= 0 ? proformaYears[index] : null;
+        const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
+
+        if (year < holdPeriod) {
+          cashFlows.push(yearCashFlow);
+        } else {
+          cashFlows.push(yearCashFlow + exitProceeds);
+        }
+      }
+
+      let rate = 0.1;
+      const maxIterations = 100;
+      const tolerance = 0.0001;
+
+      for (let i = 0; i < maxIterations; i += 1) {
+        let npv = 0;
+        let dnpv = 0;
+
+        for (let j = 0; j < cashFlows.length; j += 1) {
+          npv += cashFlows[j] / Math.pow(1 + rate, j);
+          dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
+        }
+
+        const newRate = rate - npv / dnpv;
+
+        if (!Number.isFinite(newRate)) {
+          return rate * 100;
+        }
+
+        if (Math.abs(newRate - rate) < tolerance) {
+          return newRate * 100;
+        }
+
+        rate = newRate;
+      }
+
+      return rate * 100;
+    };
+
+    const irr = calculateIRR();
+
+    const distributions = [];
+    for (let year = 1; year <= holdPeriod; year += 1) {
+      const index = Math.min(year - 1, proformaYears.length - 1);
+      const yearData = index >= 0 ? proformaYears[index] : null;
+      const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
+      if (year === holdPeriod) {
+        distributions.push(yearCashFlow + exitProceeds);
+      } else {
+        distributions.push(yearCashFlow);
+      }
+    }
+
+    const totalCashReceived = distributions.reduce((sum, value) => sum + value, 0);
+    const equityMultiple = totalCashInvested > 0 ? totalCashReceived / totalCashInvested : 0;
+
     return {
       totalUnits,
       occupiedUnits,
@@ -398,13 +1844,30 @@ const MobileHomeParkModel = () => {
       expensePerUnit,
       noiPerUnit,
       exitValue,
-      remainingBalance,
+      remainingBalance: remainingBalanceAtExit,
       exitProceeds,
       irr,
       equityMultiple,
-      proformaYears
+      proformaYears,
+      annualDebtServiceSchedule,
+      interestOnlyMonthlyPayment,
+      postInterestOnlyMonthlyPayment: amortizingMonthlyPayment,
+      interestOnlyPeriodYears: interestOnlyYears,
+      projectionYears: projectionCount,
     };
-  }, [units, additionalIncome, useActualIncome, actualIncome, expenses, managementPercent, purchaseInputs, irrInputs, proformaInputs]);
+  }, [
+    units,
+    additionalIncome,
+    useActualIncome,
+    actualIncome,
+    expenses,
+    managementPercent,
+    purchaseInputs,
+    irrInputs,
+    proformaInputs,
+    expenseRatio,
+    projectionYears,
+  ]);
 
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('en-US', {
@@ -419,11 +1882,72 @@ const MobileHomeParkModel = () => {
     return `${value.toFixed(2)}%`;
   };
 
-  const downloadReport = async () => {
-    const reportContent = document.getElementById('report');
-    if (!reportContent) return;
+  const describeRentIncrease = (year) => {
+    if (!year || typeof year !== 'object') {
+      return '—';
+    }
 
-    const htmlContent = `
+    const amount = Number(year.rentIncreaseAmount);
+    const percent = year.rentIncreasePercent;
+    const hasAmount = Number.isFinite(amount) && amount !== 0;
+    const hasPercent =
+      typeof percent === 'number' && Number.isFinite(percent) && percent !== 0;
+
+    if (!hasAmount && !hasPercent) {
+      return '—';
+    }
+
+    const parts = [];
+
+    if (hasPercent) {
+      parts.push(`${percent > 0 ? '+' : ''}${percent.toFixed(2)}%`);
+    }
+
+    if (hasAmount) {
+      const absoluteAmount = Math.abs(amount);
+      parts.push(
+        `${amount >= 0 ? '+' : '-'}${formatCurrency(absoluteAmount)} /mo`
+      );
+    }
+
+    return parts.join(' ');
+  };
+
+  const lastProformaYear =
+    calculations.proformaYears.length > 0
+      ? calculations.proformaYears[calculations.proformaYears.length - 1]
+      : null;
+  const noiGrowth = lastProformaYear ? lastProformaYear.noi - calculations.noi : null;
+  const noiGrowthPercent =
+    lastProformaYear && calculations.noi !== 0
+      ? ((lastProformaYear.noi - calculations.noi) / calculations.noi) * 100
+      : null;
+  const cashFlowGrowth = lastProformaYear
+    ? lastProformaYear.cashFlow - calculations.cashFlow
+    : null;
+  const cashFlowGrowthPercent =
+    lastProformaYear && calculations.cashFlow !== 0
+      ? ((lastProformaYear.cashFlow - calculations.cashFlow) / calculations.cashFlow) * 100
+      : null;
+  const exitCapRateDecimal = irrInputs.exitCapRate / 100;
+  const lastYearExitValue =
+    lastProformaYear && exitCapRateDecimal > 0
+      ? lastProformaYear.noi / exitCapRateDecimal
+      : null;
+  const appreciationValue =
+    lastYearExitValue !== null ? lastYearExitValue - purchaseInputs.purchasePrice : null;
+  const appreciationPercent =
+    appreciationValue !== null && purchaseInputs.purchasePrice
+      ? (appreciationValue / purchaseInputs.purchasePrice) * 100
+      : null;
+
+  const buildReportHtml = () => {
+    const reportContent = document.getElementById('report');
+    if (!reportContent) {
+      return null;
+    }
+
+    return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -520,6 +2044,221 @@ const MobileHomeParkModel = () => {
 ${reportContent.innerHTML}
 </body>
 </html>`;
+  };
+
+  const saveReportToAccount = useCallback(async ({ htmlContent, showAlert = true } = {}) => {
+    if (!isSupabaseConfigured || !supabase) {
+      alert('Supabase is not configured. Please add your Supabase credentials to enable saving reports.');
+      return false;
+    }
+
+    let authUser;
+    try {
+      authUser = await requireAuth();
+    } catch (err) {
+      if (err?.code === AUTH_REQUIRED_ERROR) {
+        return false;
+      }
+
+      console.error('Error verifying Supabase authentication before saving:', err);
+      alert('Unable to verify your authentication status. Please try signing in again.');
+      return false;
+    }
+
+    const finalHtml = htmlContent || buildReportHtml();
+    if (!finalHtml) {
+      alert('Unable to capture the report content for saving.');
+      return false;
+    }
+
+    const effectiveReportName = (reportName && reportName.trim()) || propertyInfo.name || 'Untitled Report';
+    const normalizedReportId = selectedReportId ? Number(selectedReportId) : null;
+
+    const effectiveContactInfo = {
+      ...contactInfo,
+      email: contactInfo?.email || sessionEmail || authUser?.email || '',
+    };
+
+    const propertyDetails = {
+      ...propertyInfo,
+      totalLots: calculations.totalUnits,
+      occupiedLots: calculations.occupiedUnits,
+      physicalOccupancy: calculations.physicalOccupancy,
+      economicOccupancy: calculations.economicOccupancy,
+    };
+
+    const purchaseDetails = {
+      ...purchaseInputs,
+      totalInvestment: calculations.totalInvestment,
+      downPaymentAmount: calculations.downPayment,
+      loanAmount: calculations.loanAmount,
+      monthlyPayment: calculations.monthlyPayment,
+      annualDebtService: calculations.annualDebtService,
+      interestOnlyPeriodYears: purchaseInputs.interestOnlyPeriodYears,
+      interestOnlyMonthlyPayment: calculations.interestOnlyMonthlyPayment,
+      postInterestOnlyMonthlyPayment: calculations.postInterestOnlyMonthlyPayment,
+      annualDebtServiceSchedule: calculations.annualDebtServiceSchedule,
+    };
+
+    const reportState = {
+      units,
+      propertyInfo,
+      contactInfo: effectiveContactInfo,
+      additionalIncome,
+      expenses,
+      managementPercent,
+      purchaseInputs,
+      irrInputs,
+      proformaInputs,
+      useActualIncome,
+      actualIncome,
+      expenseRatio,
+      projectionYears,
+      reportName: effectiveReportName,
+      activeTab,
+      calculations,
+      ownerUserId: authUser?.id || session?.user?.id || null,
+      ownerEmail: sessionEmail || authUser?.email || null,
+    };
+
+    setSavingReport(true);
+
+    try {
+      const apiBase = process.env.REACT_APP_API_BASE || '';
+      const response = await fetch(`${apiBase}/api/save-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          authUser: {
+            id: authUser?.id || session?.user?.id || null,
+            email: sessionEmail || authUser?.email || null,
+          },
+          contactInfo: effectiveContactInfo,
+          propertyInfo: propertyDetails,
+          purchaseInputs: purchaseDetails,
+          calculations,
+          units,
+          additionalIncome,
+          expenses,
+          managementPercent,
+          irrInputs,
+          proformaInputs,
+          useActualIncome,
+          actualIncome,
+          expenseRatio,
+          projectionYears,
+          htmlContent: finalHtml,
+          userId: authUser?.id,
+          reportId: normalizedReportId,
+          reportName: effectiveReportName,
+          reportState,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        console.error('Save failed:', result);
+
+        const detailParts = [];
+        if (result?.error) {
+          detailParts.push(result.error);
+        }
+        const detailMessage = result?.details?.message || result?.details?.details;
+        if (detailMessage && detailMessage !== result?.error) {
+          detailParts.push(detailMessage);
+        }
+
+        alert(
+          ['Failed to save the report to your account.', ...detailParts]
+            .filter(Boolean)
+            .join('\n\n')
+        );
+        return false;
+      }
+
+      const warnings = Array.isArray(result.warnings)
+        ? result.warnings.filter(Boolean)
+        : [];
+
+      if (warnings.length > 0) {
+        console.warn('Report saved with warnings:', warnings);
+      }
+
+      const savedRow = Array.isArray(result.data) ? result.data[0] : result.data;
+
+      if (savedRow?.id) {
+        setSelectedReportId(String(savedRow.id));
+        const savedName =
+          savedRow?.report_state?.reportName || savedRow?.report_name || effectiveReportName;
+        setReportName(savedName);
+      }
+
+      await fetchSavedReports();
+
+      if (showAlert) {
+        const message = warnings.length > 0
+          ? ['Report saved to your account.', ...warnings].join('\n\n')
+          : 'Report saved to your account.';
+        alert(message);
+      }
+
+      return true;
+    } catch (err) {
+      if (err?.code === AUTH_REQUIRED_ERROR || err?.code === 'SUPABASE_NOT_CONFIGURED') {
+        return false;
+      }
+
+      console.error('Error saving report:', err);
+      const message = err?.message ? `\n\n${err.message}` : '';
+      alert(`Failed to save the report to your account.${message}`);
+      return false;
+    } finally {
+      setSavingReport(false);
+    }
+  }, [
+    session,
+    reportName,
+    propertyInfo,
+    calculations,
+    purchaseInputs,
+    units,
+    contactInfo,
+    additionalIncome,
+    expenses,
+    managementPercent,
+    irrInputs,
+    proformaInputs,
+    useActualIncome,
+    actualIncome,
+    activeTab,
+    selectedReportId,
+    fetchSavedReports,
+    sessionEmail,
+    expenseRatio,
+    projectionYears,
+    requireAuth,
+  ]);
+
+  const downloadReport = async () => {
+    let authUser;
+    try {
+      authUser = await requireAuth();
+    } catch (err) {
+      if (err?.code === AUTH_REQUIRED_ERROR || err?.code === 'SUPABASE_NOT_CONFIGURED') {
+        return;
+      }
+
+      console.error('Error verifying authentication before downloading report:', err);
+      alert('Unable to verify your authentication status. Please try signing in again.');
+      return;
+    }
+
+    const htmlContent = buildReportHtml();
+    if (!htmlContent) {
+      alert('Unable to capture report content for download.');
+      return;
+    }
 
     const blob = new Blob([htmlContent], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -532,48 +2271,63 @@ ${reportContent.innerHTML}
     // Delay revoking the object URL to avoid some browsers cancelling the download
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
- // ✅ AFTER: call the API route instead
-try {
-  setSavingReport(true);
-// Build API base from env or fallback
-const apiBase = process.env.REACT_APP_API_BASE || "";
-
-const resp = await fetch(`${apiBase}/api/save-report`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    contactInfo,
-    propertyInfo,
-    purchaseInputs,
-    calculations,
-    units,
-    additionalIncome,
-    expenses,
-    htmlContent
-  })
-});
-
-  const result = await resp.json();
-
-  if (!resp.ok || !result.success) {
-    console.error("Save failed:", result);
-    alert("Report downloaded, but failed to save to database.");
-  } else {
-    console.log("Saved report ID:", result.id);
-    alert("Report downloaded and saved to database (with embedding)!");
-  }
-} catch (err) {
-  console.error("Error saving report:", err);
-  alert("Report downloaded locally only.");
-} finally {
-  setSavingReport(false);
-}
-
-
+    if (authUser?.id || session?.user?.id) {
+      await saveReportToAccount({ htmlContent, showAlert: false });
+    }
   };
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-4">
+        <div className="flex flex-wrap items-center gap-3">
+          {session?.user ? (
+            <div className="flex flex-wrap items-center gap-3 text-sm text-gray-700">
+              <span>Manage saved reports from the My Reports tab.</span>
+              <button
+                type="button"
+                onClick={() => setActiveTab('my-reports')}
+                className="font-semibold text-blue-600 hover:text-blue-700 transition"
+              >
+                Go to My Reports
+              </button>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-600">
+              {isSupabaseConfigured
+                ? 'Sign in to save and load reports from the My Reports tab.'
+                : 'Add Supabase credentials to enable authentication and saved reports.'}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {session?.user ? (
+            <>
+              <span className="text-sm text-gray-700">
+                Signed in as{' '}
+                <span className="font-semibold">
+                  {sessionEmail || session.user.email || session.user.id}
+                </span>
+              </span>
+              <button
+                onClick={handleSignOut}
+                className="rounded border border-gray-400 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100"
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            isSupabaseConfigured && (
+              <button
+                onClick={() => setAuthModalOpen(true)}
+                className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                Sign in / Create account
+              </button>
+            )
+          )}
+        </div>
+      </div>
+
       <div className="bg-white rounded-lg shadow-lg">
         {/* Header */}
         <div className="border-b border-gray-200 bg-gradient-to-r from-blue-600 to-blue-700 text-white p-6 rounded-t-lg">
@@ -632,7 +2386,9 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
         {/* Tabs */}
         <div className="border-b border-gray-200 bg-gray-50">
           <div className="flex space-x-1 p-2">
-            {['rent-roll', 'pnl', 'proforma', 'returns', 'report'].map((tab) => (
+            {[ 'rent-roll', 'pnl', 'proforma', 'returns', 'report', session?.user ? 'my-reports' : null]
+              .filter(Boolean)
+              .map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -642,9 +2398,10 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
               >
+                {tab === 'my-reports' && 'My Reports'}
                 {tab === 'rent-roll' && 'Rent Roll'}
                 {tab === 'pnl' && 'P&L Statement'}
-                {tab === 'proforma' && '5-Year Proforma'}
+                {tab === 'proforma' && `${projectionYears}-Year Proforma`}
                 {tab === 'returns' && 'Return Metrics'}
                 {tab === 'report' && 'Report'}
               </button>
@@ -654,30 +2411,366 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
 
         {/* Content */}
         <div className="p-6">
+          {activeTab === 'my-reports' && (
+            <div className="space-y-6">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-800">My Reports</h2>
+                  <p className="text-sm text-gray-600">
+                    Select a saved report to load it back into the model.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRefreshReports}
+                  disabled={!session?.user?.id || loadingReports}
+                  className="rounded border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                >
+                  {loadingReports ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+
+              {!session?.user ? (
+                <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">
+                  {isSupabaseConfigured
+                    ? 'Sign in to view and load reports saved to your account.'
+                    : 'Add Supabase credentials to enable authentication and saved reports.'}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
+                  {loadingReports ? (
+                    <div className="p-6 text-sm text-gray-600">Loading saved reports…</div>
+                  ) : sortedReports.length === 0 ? (
+                    <div className="p-6 text-sm text-gray-600">No reports saved yet.</div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('name')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                Report Name
+                                {reportSort.column === 'name' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              Property Name
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('city')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                City
+                                {reportSort.column === 'city' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('price')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                Purchase Price
+                                {reportSort.column === 'price' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('date')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                Date Created
+                                {reportSort.column === 'date' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                          {sortedReports.map((report, index) => {
+                            const reportIdString = String(report.id);
+                            const state = normaliseReportState(report.report_state);
+                            const rawDate =
+                              report.created_at ||
+                              report.updated_at ||
+                              state?.savedAt ||
+                              state?.createdAt ||
+                              state?.updatedAt ||
+                              null;
+                            const formattedDate = formatReportDate(rawDate) || '—';
+                            const purchasePriceValue = resolvePurchasePrice(report, state);
+                            const formattedPrice =
+                              typeof purchasePriceValue === 'number'
+                                ? formatCurrency(purchasePriceValue)
+                                : '—';
+                            const isLoading = loadingReportId === reportIdString;
+                            const isSelected = selectedReportId && selectedReportId === reportIdString;
+                            const cityValue = resolveCity(report, state) || '—';
+                            const rowBase = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+                            const rowState = isSelected ? 'bg-blue-50 text-blue-800' : rowBase;
+                            const rowHover = isSelected ? '' : 'hover:bg-blue-50';
+                            const handleSelectReport = () => {
+                              if (isLoading) {
+                                return;
+                              }
+
+                              loadReport(report);
+                            };
+
+                            const handleKeySelect = (event) => {
+                              if (isLoading) {
+                                return;
+                              }
+
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                loadReport(report);
+                              }
+                            };
+
+                            return (
+                              <tr
+                                key={report.id}
+                                onClick={handleSelectReport}
+                                onKeyDown={handleKeySelect}
+                                tabIndex={0}
+                                role="button"
+                                aria-pressed={Boolean(isSelected)}
+                                className={`transition-colors ${rowState} ${rowHover} ${
+                                  isLoading ? 'cursor-wait opacity-75' : 'cursor-pointer'
+                                }`}
+                              >
+                                <td className="px-4 py-3 align-middle">
+                                  <span className="font-semibold text-gray-900">
+                                    {isLoading ? 'Loading…' : resolveReportName(report, state)}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {resolvePropertyName(report, state)}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {cityValue || '—'}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {formattedPrice}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {formattedDate}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'rent-roll' && (
             <div className="space-y-6">
-              <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold text-gray-800">Rent Roll</h2>
-                <div className="flex items-center space-x-4">
-                  <div className="flex items-center space-x-2">
-                    <label className="text-sm font-semibold text-gray-700">Add Multiple Lots:</label>
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 shadow-sm">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-blue-900">Quick Populate Rent Roll</h3>
+                    <p className="text-sm text-blue-700">
+                      Define groups of lots to auto-generate sequential entries.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={addQuickPopulateRow}
+                      className="rounded border border-blue-600 px-3 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-100"
+                    >
+                      + Add Row
+                    </button>
+                    <button
+                      type="button"
+                      onClick={applyQuickPopulate}
+                      disabled={!hasValidQuickPopulateRows}
+                      className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {quickPopulateRows.map((row, index) => (
+                    <div
+                      key={row.id}
+                      className="grid grid-cols-1 gap-3 md:grid-cols-7 md:items-end"
+                    >
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-900">
+                          Number of Lots
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={row.numberOfLots}
+                          onChange={(e) => updateQuickPopulateRow(row.id, 'numberOfLots', e.target.value)}
+                          className="w-full rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
+                          placeholder="e.g. 40"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-900">
+                          Rent Amount
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={row.rentAmount}
+                          onChange={(e) => updateQuickPopulateRow(row.id, 'rentAmount', e.target.value)}
+                          className="w-full rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
+                          placeholder="e.g. 475"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-blue-900">
+                          Occupancy
+                        </label>
+                        <select
+                          value={row.occupancyStatus}
+                          onChange={(e) => updateQuickPopulateRow(row.id, 'occupancyStatus', e.target.value)}
+                          className="w-full rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
+                        >
+                          <option value="occupied">Occupied</option>
+                          <option value="vacant">Vacant</option>
+                        </select>
+                      </div>
+                      <div className="flex items-end justify-start md:justify-end">
+                        {quickPopulateRows.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeQuickPopulateRow(row.id)}
+                            className="rounded border border-red-500 px-3 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50"
+                          >
+                            Remove
+                          </button>
+                        )}
+                        {quickPopulateRows.length === 1 && (
+                          <span className="text-xs text-blue-700">
+                            Row {index + 1}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label
+                      htmlFor="vacant-total-lots"
+                      className="text-sm font-semibold text-blue-900"
+                    >
+                      Total Lots Goal
+                    </label>
                     <input
+                      id="vacant-total-lots"
                       type="number"
-                      id="bulkAddInput"
+                      min="0"
+                      value={vacantTargetLots}
+                      onChange={(e) => setVacantTargetLots(e.target.value)}
+                      className="w-28 rounded border border-blue-300 bg-white p-2 text-sm font-semibold text-blue-900"
                       placeholder="e.g. 120"
-                      className="w-24 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold"
-                      onKeyPress={(e) => {
-                        if (e.key === 'Enter') {
-                          const count = parseInt(e.target.value);
-                          if (count > 0 && count <= 500) {
-                            addMultipleUnits(count);
-                            e.target.value = '';
-                          } else {
-                            alert('Please enter a number between 1 and 500');
-                          }
-                        }
-                      }}
                     />
+                    <button
+                      type="button"
+                      onClick={vacantRemainingLots}
+                      disabled={!canVacantRemaining}
+                      className="rounded border border-blue-600 px-3 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-100 disabled:opacity-60"
+                    >
+                      Vacant the Remaining Lots
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={clearRentRoll}
+                      className="rounded border border-red-500 px-3 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50"
+                    >
+                      Clear Rent Roll
+                    </button>
+                  </div>
+                </div>
+
+                {quickPopulatePreview.totalLots > 0 && (
+                  <div className="mt-4 rounded-md border border-blue-200 bg-white p-4">
+                    <div className="text-sm font-semibold text-blue-900">Preview Summary</div>
+                    <div className="mt-2 grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Total Lots</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.totalLots}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Occupied</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.occupiedLots}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Average Rent</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.averageRent || 0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Total Rent Income</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.totalRentIncome || 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <h2 className="text-2xl font-bold text-gray-800">Rent Roll</h2>
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label className="text-xs font-semibold text-gray-700">Add Multiple Lots</label>
+                      <input
+                        type="number"
+                        id="bulkAddInput"
+                        placeholder="e.g. 120"
+                        className="w-24 rounded border border-gray-300 bg-blue-50 p-2 text-sm font-semibold text-blue-900"
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter') {
+                            const count = parseInt(e.target.value);
+                            if (count > 0 && count <= 500) {
+                              addMultipleUnits(count);
+                              e.target.value = '';
+                            } else {
+                              alert('Please enter a number between 1 and 500');
+                            }
+                          }
+                        }}
+                      />
+                    </div>
                     <button
                       onClick={() => {
                         const input = document.getElementById('bulkAddInput');
@@ -689,14 +2782,14 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                           alert('Please enter a number between 1 and 500');
                         }
                       }}
-                      className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors text-sm"
+                      className="rounded bg-green-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-green-700"
                     >
                       Add Lots
                     </button>
                   </div>
                   <button
                     onClick={addUnit}
-                    className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors"
+                    className="rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
                   >
                     + Add Single Lot
                   </button>
@@ -869,14 +2962,37 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
               <div className="space-y-6">
                 {/* Income Section */}
                 <div className="bg-green-50 p-6 rounded-lg border border-green-200">
-                  <div className="flex justify-between items-center mb-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
                     <h3 className="text-xl font-bold text-green-800">Income</h3>
-                    <button
-                      onClick={addIncomeItem}
-                      className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors text-sm"
-                    >
-                      + Add Income Line
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label htmlFor="income-category" className="text-sm font-semibold text-gray-700">
+                        Category
+                      </label>
+                      <select
+                        id="income-category"
+                        value={selectedIncomeCategory}
+                        onChange={(e) => setSelectedIncomeCategory(e.target.value)}
+                        className="p-2 border border-green-300 rounded bg-white text-sm"
+                      >
+                        {INCOME_CATEGORY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={addIncomeItem}
+                        className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors text-sm"
+                      >
+                        + Add Income Line
+                      </button>
+                      <button
+                        onClick={clearIncomeItems}
+                        className="px-4 py-2 text-sm font-semibold text-green-700 bg-white border border-green-200 rounded hover:bg-green-100 transition-colors"
+                      >
+                        Clear All Income
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="space-y-4">
@@ -969,44 +3085,92 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
 
                 {/* Operating Expenses */}
                 <div className="bg-red-50 p-6 rounded-lg border border-red-200">
-                  <div className="flex justify-between items-center mb-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
                     <h3 className="text-xl font-bold text-red-800">Operating Expenses</h3>
-                    <button
-                      onClick={addExpenseItem}
-                      className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors text-sm"
-                    >
-                      + Add Expense Line
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label htmlFor="expense-category" className="text-sm font-semibold text-gray-700">
+                        Category
+                      </label>
+                      <select
+                        id="expense-category"
+                        value={selectedExpenseCategory}
+                        onChange={(e) => setSelectedExpenseCategory(e.target.value)}
+                        className="p-2 border border-red-300 rounded bg-white text-sm"
+                      >
+                        {EXPENSE_CATEGORY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={addExpenseItem}
+                        className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors text-sm"
+                      >
+                        + Add Expense Line
+                      </button>
+                      <button
+                        onClick={clearExpenseItems}
+                        className="px-4 py-2 text-sm font-semibold text-red-700 bg-white border border-red-200 rounded hover:bg-red-100 transition-colors"
+                      >
+                        Clear All Expenses
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-3">
-                    {expenses.map((expense) => (
-                      <div key={expense.id} className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <input
-                            type="text"
-                            value={expense.name}
-                            onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
-                            className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
-                            placeholder="Expense name"
-                          />
-                          <input
-                            type="number"
-                            value={expense.amount}
-                            onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
-                            className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
-                          />
-                          <button
-                            onClick={() => removeExpenseItem(expense.id)}
-                            className="ml-3 text-red-600 hover:text-red-800 font-semibold"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                        <div className="flex justify-end text-xs text-gray-600 italic mr-20">
-                          {formatCurrency(expense.amount / calculations.totalUnits)} per lot/year
-                        </div>
+                    <div className="bg-white p-4 rounded border border-red-200">
+                      <label className="font-semibold text-gray-800" htmlFor="expense-ratio">
+                        Expense Ratio (%)
+                      </label>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                        <input
+                          id="expense-ratio"
+                          type="number"
+                          value={expenseRatio}
+                          onChange={(e) => {
+                            const next = Number(e.target.value);
+                            setExpenseRatio(Number.isFinite(next) ? next : 0);
+                          }}
+                          className="w-32 p-2 border border-red-300 rounded text-right bg-white font-semibold"
+                        />
+                        <span className="text-sm text-gray-500">Overrides detailed expense inputs.</span>
                       </div>
-                    ))}
+                    </div>
+                    {expenses.map((expense) => {
+                      const perLotAmount =
+                        calculations.totalUnits > 0
+                          ? expense.amount / calculations.totalUnits
+                          : 0;
+
+                      return (
+                        <div key={expense.id} className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <input
+                              type="text"
+                              value={expense.name}
+                              onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
+                              className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
+                              placeholder="Expense name"
+                            />
+                            <input
+                              type="number"
+                              value={expense.amount}
+                              onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
+                              className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
+                            />
+                            <button
+                              onClick={() => removeExpenseItem(expense.id)}
+                              className="ml-3 text-red-600 hover:text-red-800 font-semibold"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          <div className="flex justify-end text-xs text-gray-600 italic mr-20">
+                            {formatCurrency(perLotAmount)} per lot/year
+                          </div>
+                        </div>
+                      );
+                    })}
                     <div className="space-y-1">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center space-x-2">
@@ -1088,7 +3252,7 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
               {/* Financing Inputs */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">Financing Terms</h3>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Down Payment %</label>
                     <input
@@ -1114,6 +3278,20 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                       type="number"
                       value={purchaseInputs.loanTermYears}
                       onChange={(e) => setPurchaseInputs({...purchaseInputs, loanTermYears: Number(e.target.value)})}
+                      className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Interest-Only Period (Years)</label>
+                    <input
+                      type="number"
+                      value={purchaseInputs.interestOnlyPeriodYears}
+                      onChange={(e) =>
+                        setPurchaseInputs({
+                          ...purchaseInputs,
+                          interestOnlyPeriodYears: Number(e.target.value),
+                        })
+                      }
                       className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
                     />
                   </div>
@@ -1286,7 +3464,25 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
 
           {activeTab === 'proforma' && (
             <div className="space-y-6">
-              <h2 className="text-2xl font-bold text-gray-800">5-Year Proforma Analysis</h2>
+              <h2 className="text-2xl font-bold text-gray-800">{projectionYears}-Year Proforma Analysis</h2>
+              <div className="flex flex-wrap items-center gap-3 bg-white p-4 rounded border border-gray-200">
+                <label htmlFor="projection-years" className="text-sm font-semibold text-gray-700">
+                  Projection Years
+                </label>
+                <select
+                  id="projection-years"
+                  value={projectionYears}
+                  onChange={(e) => setProjectionYears(Number(e.target.value))}
+                  className="p-2 border border-gray-300 rounded bg-white text-sm"
+                >
+                  {[5, 7, 10].map((option) => (
+                    <option key={option} value={option}>
+                      {option} Years
+                    </option>
+                  ))}
+                </select>
+                <span className="text-sm text-gray-500">Extends revenue and return projections.</span>
+              </div>
 
               {/* Lease-Up Strategy Inputs */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
@@ -1345,27 +3541,136 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
               {/* Growth Assumptions */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">Growth Assumptions</h3>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Annual Rent Increase %</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={proformaInputs.annualRentIncrease}
-                      onChange={(e) => setProformaInputs({...proformaInputs, annualRentIncrease: Number(e.target.value)})}
-                      className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
-                    />
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Year 1 Rent Increase</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={proformaInputs.year1RentIncreaseValue}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year1RentIncreaseValue: Number(e.target.value),
+                          })
+                        }
+                        className="flex-1 p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                      />
+                      <select
+                        value={proformaInputs.year1RentIncreaseMode}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year1RentIncreaseMode: e.target.value,
+                          })
+                        }
+                        className="w-32 p-3 border border-gray-300 rounded bg-white text-gray-700 font-semibold"
+                      >
+                        <option value="percent">% Percent</option>
+                        <option value="dollar">Flat $</option>
+                      </select>
+                    </div>
                   </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Year 2 Rent Increase</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={proformaInputs.year2RentIncreaseValue}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year2RentIncreaseValue: Number(e.target.value),
+                          })
+                        }
+                        className="flex-1 p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                      />
+                      <select
+                        value={proformaInputs.year2RentIncreaseMode}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            year2RentIncreaseMode: e.target.value,
+                          })
+                        }
+                        className="w-32 p-3 border border-gray-300 rounded bg-white text-gray-700 font-semibold"
+                      >
+                        <option value="percent">% Percent</option>
+                        <option value="dollar">Flat $</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Subsequent Annual Rent Increase</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={proformaInputs.annualRentIncrease}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            annualRentIncrease: Number(e.target.value),
+                          })
+                        }
+                        className="flex-1 p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                      />
+                      <select
+                        value={proformaInputs.annualRentIncreaseMode}
+                        onChange={(e) =>
+                          setProformaInputs({
+                            ...proformaInputs,
+                            annualRentIncreaseMode: e.target.value,
+                          })
+                        }
+                        className="w-32 p-3 border border-gray-300 rounded bg-white text-gray-700 font-semibold"
+                      >
+                        <option value="percent">% Percent</option>
+                        <option value="dollar">Flat $</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Annual Expense Increase %</label>
                     <input
                       type="number"
                       step="0.1"
                       value={proformaInputs.annualExpenseIncrease}
-                      onChange={(e) => setProformaInputs({...proformaInputs, annualExpenseIncrease: Number(e.target.value)})}
+                      onChange={(e) =>
+                        setProformaInputs({
+                          ...proformaInputs,
+                          annualExpenseIncrease: Number(e.target.value),
+                        })
+                      }
                       className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
                     />
                   </div>
+                </div>
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {[
+                    { label: 'Year 1 Rent Change', index: 0 },
+                    { label: 'Year 2 Rent Change', index: 1 },
+                    { label: 'Year 3+ Rent Change', index: 2 },
+                  ].map(({ label, index }) => {
+                    const year = calculations.proformaYears[index] || null;
+                    return (
+                      <div
+                        key={label}
+                        className="bg-white border border-gray-200 rounded p-3 shadow-sm"
+                      >
+                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                          {label}
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-gray-800">
+                          {describeRentIncrease(year)}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1392,7 +3697,7 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                 </div>
               </div>
 
-              {/* 5-Year Proforma Table */}
+              {/* Proforma Table */}
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse bg-white shadow-lg">
                   <thead>
@@ -1427,6 +3732,14 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                       {calculations.proformaYears.map((year) => (
                         <td key={year.year} className="p-4 text-center font-semibold border-r border-gray-200">
                           {formatCurrency(year.avgMonthlyRent)}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="bg-slate-50 border-b border-gray-300">
+                      <td className="p-4 font-bold text-gray-800 border-r border-gray-300">Rent Growth Applied (per lot/month)</td>
+                      {calculations.proformaYears.map((year) => (
+                        <td key={year.year} className="p-4 text-center font-semibold text-gray-700 border-r border-gray-200">
+                          {describeRentIncrease(year)}
                         </td>
                       ))}
                     </tr>
@@ -1493,27 +3806,31 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
               {/* Summary Statistics */}
               <div className="grid grid-cols-3 gap-6">
                 <div className="bg-gradient-to-br from-green-50 to-green-100 p-6 rounded-lg border-2 border-green-400">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">5-Year NOI Growth</h4>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">{projectionYears}-Year NOI Growth</h4>
                   <div className="text-3xl font-bold text-green-700">
-                    {formatCurrency(calculations.proformaYears[4].noi - calculations.noi)}
+                    {typeof noiGrowth === 'number' ? formatCurrency(noiGrowth) : '—'}
                   </div>
                   <div className="text-sm text-gray-600 mt-2">
-                    {formatPercent(((calculations.proformaYears[4].noi - calculations.noi) / calculations.noi) * 100)} increase
+                    {typeof noiGrowthPercent === 'number'
+                      ? `${formatPercent(noiGrowthPercent)} increase`
+                      : '—'}
                   </div>
                 </div>
 
                 <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-6 rounded-lg border-2 border-blue-400">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">5-Year Cash Flow Growth</h4>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">{projectionYears}-Year Cash Flow Growth</h4>
                   <div className="text-3xl font-bold text-blue-700">
-                    {formatCurrency(calculations.proformaYears[4].cashFlow - calculations.cashFlow)}
+                    {typeof cashFlowGrowth === 'number' ? formatCurrency(cashFlowGrowth) : '—'}
                   </div>
                   <div className="text-sm text-gray-600 mt-2">
-                    {formatPercent(((calculations.proformaYears[4].cashFlow - calculations.cashFlow) / calculations.cashFlow) * 100)} increase
+                    {typeof cashFlowGrowthPercent === 'number'
+                      ? `${formatPercent(cashFlowGrowthPercent)} increase`
+                      : '—'}
                   </div>
                 </div>
 
                 <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-6 rounded-lg border-2 border-purple-400">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-2">Total 5-Year Cash Flow</h4>
+                  <h4 className="text-sm font-semibold text-gray-700 mb-2">Total {projectionYears}-Year Cash Flow</h4>
                   <div className="text-3xl font-bold text-purple-700">
                     {formatCurrency(calculations.proformaYears.reduce((sum, year) => sum + year.cashFlow, 0))}
                   </div>
@@ -1523,15 +3840,15 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                 </div>
               </div>
 
-              {/* Year 5 Exit Analysis */}
+              {/* Exit Analysis */}
               <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 p-6 rounded-lg border-2 border-indigo-400">
-                <h3 className="text-xl font-bold text-indigo-800 mb-4">Year 5 Exit Analysis</h3>
+                <h3 className="text-xl font-bold text-indigo-800 mb-4">Year {projectionYears} Exit Analysis</h3>
                 <div className="grid grid-cols-2 gap-6">
                   <div>
                     <div className="space-y-2">
                       <div className="flex justify-between">
-                        <span className="text-gray-700">Year 5 NOI:</span>
-                        <span className="font-bold">{formatCurrency(calculations.proformaYears[4].noi)}</span>
+                        <span className="text-gray-700">Year {projectionYears} NOI:</span>
+                        <span className="font-bold">{lastProformaYear ? formatCurrency(lastProformaYear.noi) : '—'}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-700">Exit Cap Rate:</span>
@@ -1540,7 +3857,7 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                       <div className="flex justify-between pt-2 border-t-2 border-indigo-300">
                         <span className="text-gray-900 font-bold">Projected Exit Value:</span>
                         <span className="font-bold text-indigo-700 text-xl">
-                          {formatCurrency(calculations.proformaYears[4].noi / (irrInputs.exitCapRate / 100))}
+                          {lastYearExitValue !== null ? formatCurrency(lastYearExitValue) : '—'}
                         </span>
                       </div>
                     </div>
@@ -1548,10 +3865,12 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                   <div>
                     <div className="text-sm text-gray-600 mb-2">Value Appreciation</div>
                     <div className="text-3xl font-bold text-indigo-700">
-                      {formatCurrency((calculations.proformaYears[4].noi / (irrInputs.exitCapRate / 100)) - purchaseInputs.purchasePrice)}
+                      {appreciationValue !== null ? formatCurrency(appreciationValue) : '—'}
                     </div>
                     <div className="text-sm text-gray-600 mt-1">
-                      {formatPercent((((calculations.proformaYears[4].noi / (irrInputs.exitCapRate / 100)) - purchaseInputs.purchasePrice) / purchaseInputs.purchasePrice) * 100)} increase
+                      {appreciationPercent !== null
+                        ? `${formatPercent(appreciationPercent)} increase`
+                        : '—'}
                     </div>
                   </div>
                 </div>
@@ -1561,8 +3880,8 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
 
           {activeTab === 'report' && (
             <div className="bg-white">
-              <div className="flex items-center justify-between mb-4 print:hidden">
-                <div className="flex items-center space-x-3">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mb-4 print:hidden">
+                <div className="flex flex-wrap items-end gap-3">
                   <input
                     type="text"
                     placeholder="Name"
@@ -1591,8 +3910,37 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
                     onChange={(e) => setContactInfo({...contactInfo, phone: e.target.value})}
                     className="p-2 border border-gray-300 rounded bg-white text-sm w-36"
                   />
+                  <div className="flex flex-col w-56">
+                    <label className="text-sm font-semibold text-gray-700 mb-1">Report Name</label>
+                    <input
+                      type="text"
+                      placeholder="Report name"
+                      value={reportName}
+                      onChange={(e) => setReportName(e.target.value)}
+                      className="p-2 border border-gray-300 rounded bg-white text-sm w-full"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Used to identify and save this report.</p>
+                  </div>
                 </div>
-                <div>
+                <div className="flex flex-wrap items-center gap-3 justify-end">
+                  {session?.user ? (
+                    <button
+                      onClick={() => saveReportToAccount({ showAlert: true })}
+                      className="rounded border border-blue-600 px-6 py-2 font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                      disabled={savingReport}
+                    >
+                      {savingReport ? 'Saving…' : selectedReportId ? 'Save Changes' : 'Save to Account'}
+                    </button>
+                  ) : (
+                    isSupabaseConfigured && (
+                      <button
+                        onClick={() => setAuthModalOpen(true)}
+                        className="rounded border border-blue-400 px-6 py-2 font-semibold text-blue-600 transition hover:bg-blue-50"
+                      >
+                        Sign in to save
+                      </button>
+                    )
+                  )}
                   <button
                     onClick={downloadReport}
                     className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition-colors flex items-center space-x-2"
@@ -1888,6 +4236,23 @@ const resp = await fetch(`${apiBase}/api/save-report`, {
           )}
         </div>
       </div>
+
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onAuthSuccess={async () => {
+          if (isSupabaseConfigured && supabase) {
+            try {
+              const { data } = await supabase.auth.getSession();
+              if (data?.session?.user?.id) {
+                fetchSavedReports({ sessionOverride: data.session });
+              }
+            } catch (err) {
+              console.error('Error refreshing saved reports after sign-in:', err);
+            }
+          }
+        }}
+      />
 
       <style>{`
         @media print {

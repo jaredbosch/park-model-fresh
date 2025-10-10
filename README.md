@@ -1,70 +1,264 @@
-# Getting Started with Create React App
+# Mobile Home Park Model
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This project is a Create React App that models the operations of a mobile home park. It now includes Supabase-backed authentication and persistence so users can sign in, save their underwriting reports, and reload them later.
 
-## Available Scripts
+The app is deployed as a static React site and uses the `api/save-report.js` serverless function when running on Vercel.
 
-In the project directory, you can run:
+## Prerequisites
 
-### `npm start`
+- Node.js 18+
+- npm 9+
+- A Supabase project (Database + Authentication enabled)
+- Optional: Resend account for notification emails
+- Optional: OpenAI account for text embeddings
+- [Vercel CLI](https://vercel.com/docs/cli) if you plan to preview locally with the Vercel runtime
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## Environment variables
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+| Location | Variable | Description |
+| --- | --- | --- |
+| React app | `REACT_APP_SUPABASE_URL` | Supabase project URL |
+| React app | `REACT_APP_SUPABASE_ANON_KEY` | Supabase anon/public API key |
+| Vercel function | `SUPABASE_URL` | Supabase project URL |
+| Vercel function | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (keep private) |
+| Vercel function | `SUPABASE_DB_URL` | Direct Postgres connection string used by the MCP schema helper |
+| Vercel function | `OPENAI_API_KEY` | Optional, required to generate embeddings when saving reports |
+| Vercel function | `RESEND_API_KEY` | Optional, required to send notification emails when reports are saved |
+| Vercel function | `RESEND_FROM_EMAIL` | Optional, verified sender address for Resend notification emails |
+| Vercel function | `REPORT_NOTIFICATION_EMAILS` | Optional, comma-separated list of email recipients notified on save |
 
-### `npm test`
+Create two `.env` files:
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+```bash
+# React app runtime
+cp .env.example .env.local   # create this file if it doesn't exist
 
-### `npm run build`
+# Vercel serverless runtime
+cp .env.server.example .env  # create this file if it doesn't exist
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+Populate them with the variables from the table above. For CRA, any variables that need to be exposed to the browser must be prefixed with `REACT_APP_`.
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+> **Security note:** Never commit `.env*` files. Vercel manages environment variables securely via the dashboard or CLI.
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+### Email notifications
 
-### `npm run eject`
+With `RESEND_API_KEY` and `RESEND_FROM_EMAIL` configured the `/api/save-report` function emails a copy of every saved or updated report. Recipients come from the optional `REPORT_NOTIFICATION_EMAILS` list (comma-separated) and the report contact's email address when available. Leave these values blank to disable email delivery while still allowing Supabase persistence.
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+## Supabase database setup
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+Create a `reports` table that can store the generated HTML along with any of the optional metadata you want to persist. The `/api/save-report` function **requires** a handful of auth-aware columns so each report stays associated with the signed-in Supabase user. The table below outlines the minimum schema and the impact of omitting any optional fields:
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+| Column | Type | Purpose | If missing |
+| --- | --- | --- | --- |
+| `id` | `bigint` (identity) | Primary key used when updating an existing report | Required – saves will fail without it |
+| `created_at` / `updated_at` | `timestamptz` | Timestamps used for sorting and audit trails | Default to `now()` so new rows get sorted correctly |
+| `user_id` | `uuid` | Links a report back to the authenticated Supabase user | **Required** – saves fail until this column exists |
+| `report_name` | `text` | Stores the friendly label shown in the saved-reports list | **Required** – saves fail until this column exists |
+| `report_state` | `jsonb` | Persists the full underwriting form so the report can be reloaded | **Required** – saves fail until this column exists |
+| `report_html` | `text` | Holds the rendered HTML that can be emailed or downloaded | Optional – HTML is skipped when the column is absent |
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+If you started with an older schema that only tracked financial metrics, run the following SQL in the Supabase SQL editor to add the recommended columns without disturbing existing data:
 
-## Learn More
+```sql
+alter table public.reports
+  add column if not exists user_id uuid references auth.users (id),
+  add column if not exists report_name text,
+  add column if not exists report_state jsonb,
+  add column if not exists report_html text,
+  add column if not exists created_at timestamptz default timezone('utc'::text, now()) not null,
+  add column if not exists updated_at timestamptz default timezone('utc'::text, now()) not null;
+```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+### Manual updates via the Supabase dashboard
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+Prefer using the Supabase UI? You can add the same columns from **Table editor → reports**:
 
-### Code Splitting
+1. Click **+ New column** and create any missing fields (nullable unless specified):
+   - `user_id` (`uuid`) — reference `auth.users(id)`
+   - `report_name` (`text`)
+   - `report_state` (`jsonb`)
+   - `report_html` (`text`, optional but recommended)
+   - `created_at` / `updated_at` (`timestamptz`, default to `now()`)
+2. Save the changes and reload the underwriting app before trying again.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+### Enable Row Level Security (RLS)
 
-### Analyzing the Bundle Size
+Turn on RLS for the `reports` table so Supabase enforces per-user access. After enabling it, add a policy that lets each authenticated user read and write only the rows they own:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+```sql
+create policy "Users manage their own reports"
+  on public.reports
+  for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+```
 
-### Making a Progressive Web App
+The `/api/save-report` Vercel function authenticates with the service role key, which bypasses RLS so saves and updates keep working. On the client we rely on the anon key and the signed-in session, so be sure your policies allow selecting rows where `user_id = auth.uid()`.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+### Automated schema helper (Supabase MCP server)
 
-### Advanced Configuration
+If you would rather update the schema from your local environment, the repository includes a lightweight Model Context Protocol helper that talks directly to your Supabase Postgres instance. Provide the connection string in `.env`:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+```bash
+SUPABASE_DB_URL=postgresql://postgres:YOUR_PASSWORD@YOUR_PROJECT.supabase.co:5432/postgres
+```
 
-### Deployment
+Then run the MCP command:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+```bash
+npm run supabase:mcp
+```
 
-### `npm run build` fails to minify
+The script connects with SSL, creates the `reports` table when it is missing, backfills the required auth columns (`user_id`, `report_name`, `report_state`) along with `report_html` and timestamps, and installs the `reports_user_id_idx` index plus the `handle_reports_updated_at` trigger. The command prints a JSON summary showing exactly which operations ran so you can verify the changes before re-running your save tests.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Once those fundamentals are in place you can add any of the optional analytics columns you want to persist. The full schema below creates a fully featured table that mirrors every field the UI knows how to store. Paste it into the Supabase SQL editor if you are setting things up from scratch:
+
+```sql
+create table if not exists public.reports (
+  id bigint generated by default as identity primary key,
+  user_id uuid references auth.users (id),
+  report_name text,
+  report_state jsonb,
+  user_name text,
+  user_email text,
+  user_phone text,
+  user_company text,
+  park_name text,
+  park_address text,
+  park_city text,
+  park_state text,
+  purchase_price numeric,
+  closing_costs numeric,
+  total_investment numeric,
+  down_payment_percent numeric,
+  down_payment_amount numeric,
+  loan_amount numeric,
+  interest_rate numeric,
+  loan_term_years numeric,
+  monthly_payment numeric,
+  annual_debt_service numeric,
+  total_lots integer,
+  occupied_lots integer,
+  physical_occupancy numeric,
+  economic_occupancy numeric,
+  gross_potential_rent numeric,
+  lot_rent_income numeric,
+  other_income numeric,
+  effective_gross_income numeric,
+  total_operating_expenses numeric,
+  management_fee numeric,
+  noi numeric,
+  cap_rate numeric,
+  cash_on_cash numeric,
+  dscr numeric,
+  irr numeric,
+  equity_multiple numeric,
+  annual_cash_flow numeric,
+  income_per_unit numeric,
+  expense_per_unit numeric,
+  noi_per_unit numeric,
+  report_html text not null,
+  rent_roll jsonb,
+  income_items jsonb,
+  expense_items jsonb,
+  additional_income jsonb,
+  embedding jsonb,
+  created_at timestamptz default timezone('utc'::text, now()) not null,
+  updated_at timestamptz default timezone('utc'::text, now()) not null
+);
+
+create index if not exists reports_user_id_idx on public.reports (user_id);
+
+create trigger handle_reports_updated_at
+  before update on public.reports
+  for each row
+  execute function public.handle_updated_at();
+```
+
+> The `handle_updated_at` trigger is created automatically in new Supabase projects. If it does not exist, create it with:
+>
+> ```sql
+> create function public.handle_updated_at()
+> returns trigger
+> language plpgsql
+> as $$
+> begin
+>   new.updated_at = timezone('utc'::text, now());
+>   return new;
+> end;
+> $$;
+> ```
+
+If you already have a `reports` table, make sure it includes a `report_html` column (type `text` or `jsonb`) and that any JSON fields such as `report_state`, `rent_roll`, or `additional_income` use the `jsonb` type. When the column is missing the serverless API still saves reports (omitting the raw HTML) and surfaces a warning so you can add it later. The API continues to validate the schema and returns descriptive errors when the table itself is missing or inaccessible.
+
+## Local development
+
+Install dependencies and start the CRA development server:
+
+```bash
+npm install
+npm start
+```
+
+The app will be available at [http://localhost:3000](http://localhost:3000). Authentication and report saving will function locally as long as the Supabase environment variables are set.
+
+## Local testing with the Vercel runtime
+
+To simulate production behaviour (including the `/api/save-report` function) install the Vercel CLI and run:
+
+```bash
+npm install
+npm run build
+vercel dev
+```
+
+`vercel dev` reads environment variables from `.env`, `.env.local`, `.env.development.local`, etc. You can sync variables from your Vercel project with:
+
+```bash
+vercel login
+vercel link
+vercel env pull .env.local
+```
+
+Then restart `vercel dev` so both the React app and the API route run under the same environment.
+
+## Running tests
+
+```bash
+npm test
+```
+
+This launches the CRA test runner in watch mode.
+
+## Production build
+
+Build the static React bundle that Vercel will serve:
+
+```bash
+npm run build
+```
+
+The output lives in `build/`. Push your branch and open a PR to trigger a Vercel preview deployment. You can test the Supabase-powered flows in the preview URL once the environment variables are set in the Vercel dashboard.
+
+## Deploying to Vercel
+
+Once you are satisfied with your changes locally:
+
+1. Commit the changes to your git branch.
+2. Push the branch to GitHub (or your connected Git provider). For example:
+
+   ```bash
+   git push origin <branch-name>
+   ```
+
+3. Vercel automatically detects the push, builds the project, and publishes a new deployment for that branch. You can monitor the progress from the Vercel dashboard or the Git provider's pull request view.
+
+By default Vercel treats the `main` branch as production. This repository includes a [`vercel.json`](./vercel.json) file that overrides the production branch to `work` so pushes from the active development branch immediately promote to the live site. If your production branch differs, update `vercel.json` (or remove it) to match the branch you want Vercel to deploy automatically.
+
+## Troubleshooting
+
+- **Supabase not configured:** The UI will warn you if `REACT_APP_SUPABASE_URL` or `REACT_APP_SUPABASE_ANON_KEY` are missing. Ensure they are present in `.env.local` before running locally or configure them in Vercel > Project Settings > Environment Variables.
+- **Report saves fail:** Check the serverless logs (`vercel logs <deployment-url>`) to confirm the `SUPABASE_SERVICE_ROLE_KEY` is available. The API now surfaces descriptive errors when credentials, the `reports` table, or the `report_html` column are missing. The browser alert will include the server message for quick debugging.
+- **Emails/embeddings skipped:** The serverless function logs warnings if `RESEND_API_KEY` or `OPENAI_API_KEY` are not defined. These features are optional.
+

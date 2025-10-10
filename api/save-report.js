@@ -1,42 +1,261 @@
-import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
-import { Resend } from 'resend';
+const { createClient } = require('@supabase/supabase-js');
+const OpenAI = require('openai');
+const { Resend } = require('resend');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const openaiApiKey = process.env.OPENAI_API_KEY;
+const resendApiKey = process.env.RESEND_API_KEY;
+const resendFromEmail = process.env.RESEND_FROM_EMAIL || '';
+const notificationEmailList = process.env.REPORT_NOTIFICATION_EMAILS || '';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const supabase =
+  supabaseUrl && supabaseServiceRoleKey
+    ? createClient(supabaseUrl, supabaseServiceRoleKey)
+    : null;
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const sanitizeColumnName = (rawColumn) => {
+  if (!rawColumn) {
+    return rawColumn;
+  }
 
-export default async function handler(req, res) {
+  const withoutTable = rawColumn.includes('.')
+    ? rawColumn.split('.').pop()
+    : rawColumn;
+
+  return withoutTable.replace(/["'`]/g, '').replace(/-/g, '_');
+};
+
+const REQUIRED_COLUMNS = new Set(['user_id', 'report_name', 'report_state']);
+const RECOMMENDED_COLUMNS = new Set(['report_html']);
+const OPTIONAL_PROBE_COLUMNS = new Set();
+
+let cachedReportsSchemaStatus = {
+  ok: false,
+  checkedAt: 0,
+  error: null,
+  warning: null,
+};
+
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+const ensureReportsSchema = async () => {
+  if (!supabase) {
+    return {
+      ok: false,
+      error: {
+        message: 'Supabase credentials are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+      },
+    };
+  }
+
+  const now = Date.now();
+  if (cachedReportsSchemaStatus.ok && now - cachedReportsSchemaStatus.checkedAt < CACHE_DURATION_MS) {
+    return cachedReportsSchemaStatus;
+  }
+
+  const columnsToCheck = new Set([
+    'id',
+    ...REQUIRED_COLUMNS,
+    ...RECOMMENDED_COLUMNS,
+    ...OPTIONAL_PROBE_COLUMNS,
+  ]);
+
+  const missingRecommended = new Set();
+  const missingOptional = new Set();
+
+  while (columnsToCheck.size > 0) {
+    const { error } = await supabase
+      .from('reports')
+      .select(Array.from(columnsToCheck).join(', '), { head: true, count: 'exact' });
+
+    if (!error) {
+      break;
+    }
+
+    if (error.code === '42P01') {
+      cachedReportsSchemaStatus = {
+        ok: false,
+        checkedAt: now,
+        error: {
+          message: "Supabase table 'reports' is missing. Create the table before saving reports.",
+          code: error.code,
+          details: error.details,
+          hint: error.hint,
+        },
+        warning: null,
+      };
+
+      return cachedReportsSchemaStatus;
+    }
+
+    const missingColumnMatch =
+      error.message?.match(/column\s+"?([^"\s]+)"?/i) ||
+      error.message?.match(/column\s+'?([^'\s]+)'?/i) ||
+      error.details?.match(/column\s+"?([^"\s]+)"?/i) ||
+      error.details?.match(/column\s+'?([^'\s]+)'?/i);
+
+    const missingColumn = sanitizeColumnName(missingColumnMatch?.[1]);
+
+    if (error.code === '42703' && missingColumn) {
+      if (REQUIRED_COLUMNS.has(missingColumn)) {
+        cachedReportsSchemaStatus = {
+          ok: false,
+          checkedAt: now,
+          error: {
+            message: `Supabase 'reports' table is missing the required column "${missingColumn}".`,
+            code: error.code,
+            details: error.details,
+            hint: error.hint,
+          },
+          warning: null,
+        };
+
+        return cachedReportsSchemaStatus;
+      }
+
+      if (columnsToCheck.has(missingColumn)) {
+        columnsToCheck.delete(missingColumn);
+
+        if (RECOMMENDED_COLUMNS.has(missingColumn)) {
+          missingRecommended.add(missingColumn);
+        } else {
+          missingOptional.add(missingColumn);
+        }
+
+        continue;
+      }
+    }
+
+    let message = 'Unable to access the Supabase reports table. Check the table name and columns.';
+
+    const errorText = `${error.message || ''} ${error.details || ''}`.toLowerCase();
+
+    if (error.code === '42501' || errorText.includes('permission denied')) {
+      message =
+        'Supabase credentials do not have access to the "reports" table. Use the service role key or update Row Level Security.';
+    } else if (!supabaseServiceRoleKey) {
+      message =
+        'Supabase service role key is missing. Add SUPABASE_SERVICE_ROLE_KEY so the server can manage the "reports" table.';
+    }
+
+    cachedReportsSchemaStatus = {
+      ok: false,
+      checkedAt: now,
+      error: {
+        message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+      },
+      warning: null,
+    };
+
+    return cachedReportsSchemaStatus;
+  }
+
+  const warnings = [];
+
+  if (missingRecommended.size > 0) {
+    const recommendedList = Array.from(missingRecommended).sort();
+    warnings.push(
+      `Supabase 'reports' table is missing optional columns: ${recommendedList.join(
+        ', '
+      )}. Data will still save, but those fields will be omitted until the columns are added.`
+    );
+  }
+
+  if (missingOptional.size > 0) {
+    const optionalList = Array.from(missingOptional).sort();
+    warnings.push(
+      `Supabase 'reports' table is missing probe-only columns: ${optionalList.join(
+        ', '
+      )}.`
+    );
+  }
+
+  cachedReportsSchemaStatus = {
+    ok: true,
+    checkedAt: now,
+    error: null,
+    warning: warnings.length > 0 ? warnings.join(' ') : null,
+  };
+  return cachedReportsSchemaStatus;
+};
+
+const parseEmailList = (value) =>
+  value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+const staticNotificationEmails = parseEmailList(notificationEmailList);
+
+const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
+
+const resend = resendApiKey ? new Resend(resendApiKey) : null;
+
+async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
     const payload = req.body || {};
+    const authUser = payload.authUser || {};
+
+    if (!supabase) {
+      console.error('Missing Supabase credentials.');
+      return res.status(500).json({ success: false, error: 'Supabase is not configured on the server.' });
+    }
+
+    const schemaStatus = await ensureReportsSchema();
+
+    if (schemaStatus.warning) {
+      console.warn(schemaStatus.warning);
+    }
+
+    if (!schemaStatus.ok) {
+      console.error('Supabase reports table validation failed:', schemaStatus.error);
+      return res.status(500).json({ success: false, error: schemaStatus.error?.message, details: schemaStatus.error });
+    }
+
+    if (!payload.userId) {
+      return res.status(400).json({ success: false, error: 'User ID is required to save a report.' });
+    }
+
+    const ownerEmail = payload.contactInfo?.email || authUser.email || '';
 
     // Build embedding text
     const textToEmbed = `${payload.propertyInfo?.name || ''}, ${payload.propertyInfo?.state || ''}\n${payload.htmlContent || ''}`;
 
     let embedding = null;
-    if (textToEmbed.trim()) {
+    if (textToEmbed.trim() && openai) {
       const embeddingResp = await openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: textToEmbed,
       });
       embedding = embeddingResp.data[0].embedding;
+    } else if (textToEmbed.trim() && !openai) {
+      console.warn('OPENAI_API_KEY is not set. Embeddings will be skipped.');
     }
+
+    const reportState =
+      payload.reportState && typeof payload.reportState === 'object'
+        ? {
+            ...payload.reportState,
+            ownerUserId: payload.userId,
+            ownerEmail,
+          }
+        : null;
 
     // Map payload → Supabase schema
     const fieldMap = {
+      user_id: payload.userId,
+      report_name: payload.reportName,
+      report_state: reportState,
       user_name: payload.contactInfo?.name,
-      user_email: payload.contactInfo?.email,
+      user_email: ownerEmail,
       user_phone: payload.contactInfo?.phone,
       user_company: payload.contactInfo?.company,
       park_name: payload.propertyInfo?.name,
@@ -53,15 +272,19 @@ export default async function handler(req, res) {
       loan_term_years: payload.purchaseInputs?.loanTermYears,
       monthly_payment: payload.purchaseInputs?.monthlyPayment,
       annual_debt_service: payload.purchaseInputs?.annualDebtService,
-      total_lots: payload.propertyInfo?.totalLots,
-      occupied_lots: payload.propertyInfo?.occupiedLots,
-      physical_occupancy: payload.propertyInfo?.physicalOccupancy,
-      economic_occupancy: payload.propertyInfo?.economicOccupancy,
+      interest_only_period_years: payload.purchaseInputs?.interestOnlyPeriodYears,
+      interest_only_payment: payload.purchaseInputs?.interestOnlyMonthlyPayment,
+      amortizing_payment: payload.purchaseInputs?.postInterestOnlyMonthlyPayment,
+      total_lots: payload.propertyInfo?.totalLots ?? payload.calculations?.totalUnits,
+      occupied_lots: payload.propertyInfo?.occupiedLots ?? payload.calculations?.occupiedUnits,
+      physical_occupancy: payload.propertyInfo?.physicalOccupancy ?? payload.calculations?.physicalOccupancy,
+      economic_occupancy: payload.propertyInfo?.economicOccupancy ?? payload.calculations?.economicOccupancy,
       gross_potential_rent: payload.calculations?.grossPotentialRent,
       lot_rent_income: payload.calculations?.lotRentIncome,
-      other_income: payload.calculations?.otherIncome,
+      other_income:
+        payload.calculations?.totalAdditionalIncome ?? payload.calculations?.otherIncome,
       effective_gross_income: payload.calculations?.effectiveGrossIncome,
-      total_operating_expenses: payload.calculations?.totalOperatingExpenses,
+      total_operating_expenses: payload.calculations?.totalOpEx,
       management_fee: payload.calculations?.managementFee,
       noi: payload.calculations?.noi,
       cap_rate: payload.calculations?.capRate,
@@ -69,16 +292,18 @@ export default async function handler(req, res) {
       dscr: payload.calculations?.dscr,
       irr: payload.calculations?.irr,
       equity_multiple: payload.calculations?.equityMultiple,
-      annual_cash_flow: payload.calculations?.annualCashFlow,
+      annual_cash_flow: payload.calculations?.cashFlow,
       income_per_unit: payload.calculations?.incomePerUnit,
       expense_per_unit: payload.calculations?.expensePerUnit,
       noi_per_unit: payload.calculations?.noiPerUnit,
       report_html: payload.htmlContent || '',
-      rent_roll: payload.rentRoll || {},
-      income_items: payload.incomeItems || {},
-      expense_items: payload.expenses || {},
-      additional_income: payload.additionalIncome || {},
+      rent_roll: payload.units || [],
+      income_items: payload.additionalIncome || [],
+      expense_items: payload.expenses || [],
+      additional_income: payload.additionalIncome || [],
       embedding,
+      expense_ratio: payload.expenseRatio,
+      projection_years: payload.projectionYears,
     };
 
     // Prune undefined / null / empty values
@@ -86,24 +311,164 @@ export default async function handler(req, res) {
       Object.entries(fieldMap).filter(([_, v]) => v !== undefined && v !== null && v !== '')
     );
 
-    const { data, error } = await supabase.from('reports').insert([insertData]).select();
+    const optionalColumns = new Set(
+      Object.keys(insertData).filter((column) => !REQUIRED_COLUMNS.has(column))
+    );
+
+    let skipUserIdFilter = false;
+
+    const performPersistence = async (dataToPersist) => {
+      if (payload.reportId) {
+        let query = supabase
+          .from('reports')
+          .update(dataToPersist)
+          .eq('id', payload.reportId);
+
+        if (!skipUserIdFilter) {
+          query = query.eq('user_id', payload.userId);
+        }
+
+        return query.select();
+      }
+
+      return supabase.from('reports').insert([dataToPersist]).select();
+    };
+
+    let data;
+    let error;
+    let dataToPersist = { ...insertData };
+
+    const droppedColumns = [];
+
+    for (let attempt = 0; attempt < optionalColumns.size + 1; attempt += 1) {
+      ({ data, error } = await performPersistence(dataToPersist));
+
+      if (!error) {
+        break;
+      }
+
+      const columnFromMessage =
+        error.message?.match(/column\s+"?([^"\s]+)"?/i) ||
+        error.message?.match(/column\s+'?([^'\s]+)'?/i) ||
+        error.details?.match(/column\s+"?([^"\s]+)"?/i) ||
+        error.details?.match(/column\s+'?([^'\s]+)'?/i);
+
+      const missingColumn = sanitizeColumnName(columnFromMessage?.[1]);
+
+      if (error.code !== '42703' || !missingColumn) {
+        break;
+      }
+
+      let handled = false;
+
+      if (missingColumn === 'user_id' && payload.reportId && !skipUserIdFilter) {
+        console.warn(
+          'Supabase reports table is missing the "user_id" column used for ownership filtering. Retrying update without that filter.'
+        );
+        skipUserIdFilter = true;
+        handled = true;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(dataToPersist, missingColumn)) {
+        console.warn(
+          `Column "${missingColumn}" is not present in Supabase. Retrying save without it.`
+        );
+        const { [missingColumn]: _removed, ...rest } = dataToPersist;
+        dataToPersist = rest;
+        optionalColumns.delete(missingColumn);
+        droppedColumns.push(missingColumn);
+        handled = true;
+      } else {
+        optionalColumns.delete(missingColumn);
+      }
+
+      if (handled) {
+        continue;
+      }
+
+      break;
+    }
 
     if (error) {
-      console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: error.message });
+      const sanitizedError = {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        code: error.code,
+      };
+
+      console.error('Supabase insert error:', sanitizedError);
+      return res.status(500).json({ success: false, error: error.message, details: sanitizedError });
+    }
+
+    if (droppedColumns.length > 0) {
+      console.warn(
+        `Saved report without unsupported columns: ${droppedColumns.sort().join(', ')}`
+      );
     }
 
     // ✅ Send full HTML report in the email body
-    await resend.emails.send({
-      from: 'onboarding@resend.dev',
-      to: 'boschtj@gmail.com',
-      subject: `New Report Saved: ${payload.propertyInfo?.name || 'Unknown Property'}`,
-      html: payload.htmlContent || `<p>New report saved for ${payload.propertyInfo?.name || 'Unknown Property'}</p>`,
-    });
+    if (resend) {
+      try {
+        const isSandbox =
+          !process.env.RESEND_FROM_EMAIL || process.env.RESEND_FROM_EMAIL.includes('resend.dev');
 
-    return res.status(200).json({ success: true, data });
+        const fromEmail = isSandbox
+          ? 'onboarding@resend.dev'
+          : process.env.RESEND_FROM_EMAIL || 'reports@redlinecre.com';
+
+        const fallbackRecipient = isSandbox
+          ? 'boschtj@gmail.com'
+          : payload.contactInfo?.email || 'reports@redlinecre.com';
+
+        const notificationRecipients = new Set(staticNotificationEmails);
+        notificationRecipients.add(fallbackRecipient);
+
+        if (authUser.email) {
+          notificationRecipients.add(authUser.email);
+        }
+
+        if (payload.contactInfo?.email) {
+          notificationRecipients.add(payload.contactInfo.email);
+        }
+
+        const recipientList = Array.from(notificationRecipients).filter(Boolean);
+
+        if (recipientList.length === 0) {
+          console.warn('No notification recipients configured. Skipping email send.');
+        } else {
+          const propertyName = payload.propertyInfo?.name || 'Unknown Property';
+          const htmlContent =
+            payload.htmlContent || `<p>New report saved for ${propertyName}</p>`;
+
+          await resend.emails.send({
+            from: fromEmail,
+            to: recipientList,
+            subject: `New Report Saved: ${propertyName}`,
+            html: htmlContent,
+          });
+
+          console.log(`✅ Email sent to ${recipientList.join(', ')} from ${fromEmail}`);
+        }
+      } catch (error) {
+        console.error('❌ Error sending email:', error);
+      }
+    } else {
+      console.warn('RESEND_API_KEY is not set. Notification email will not be sent.');
+    }
+
+    const responseBody = { success: true, data };
+
+    if (schemaStatus.warning) {
+      responseBody.warnings = [schemaStatus.warning];
+    }
+
+    return res.status(200).json(responseBody);
   } catch (err) {
     console.error('Handler error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
+
+module.exports = handler;
+module.exports.default = handler;
