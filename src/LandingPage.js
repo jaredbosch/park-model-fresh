@@ -1,19 +1,7 @@
-import React, { useMemo, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import React, { useState } from 'react';
 import { ArrowRight, LogIn, Download } from 'lucide-react';
 
-const LandingPage = ({ onTryItNow }) => {
-  const supabase = useMemo(() => {
-    const url = process.env.REACT_APP_SUPABASE_URL;
-    const anonKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
-
-    if (!url || !anonKey) {
-      console.warn('Supabase environment variables are missing. Auth modal will be disabled.');
-      return null;
-    }
-
-    return createClient(url, anonKey);
-  }, []);
+const LandingPage = ({ onTryItNow, supabase }) => {
 
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState('sign-in');
