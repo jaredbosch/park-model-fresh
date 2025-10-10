@@ -247,16 +247,28 @@ const buildEmbeddingSource = (payload = {}) => {
   };
 };
 
+const MAX_EMBEDDING_SOURCE_LENGTH = 4000;
+
 const maybeCreateReportEmbedding = async ({ reportRecord, payload, htmlLength }) => {
-  if (!openaiClient || !supabase) {
+  if (!openaiClient) {
+    console.log('⚠️  Skipping report embedding: OpenAI client is not configured.');
+    return;
+  }
+
+  if (!supabase) {
+    console.log('⚠️  Skipping report embedding: Supabase client is not configured.');
     return;
   }
 
   if (!reportRecord || !reportRecord.id) {
+    console.log('⚠️  Skipping report embedding: Report identifier is missing.');
     return;
   }
 
   if (typeof htmlLength === 'number' && htmlLength > 50000) {
+    console.log(
+      `⚠️  Skipping report embedding for ${reportRecord.id}: HTML length ${htmlLength} exceeds 50000 characters.`
+    );
     return;
   }
 
@@ -265,44 +277,42 @@ const maybeCreateReportEmbedding = async ({ reportRecord, payload, htmlLength })
     const compactText = extractKeyMetrics(keyMetricsPayload);
 
     if (!compactText) {
+      console.log(`⚠️  Skipping report embedding for ${reportRecord.id}: No compact text available.`);
+      return;
+    }
+
+    const truncatedText = compactText.slice(0, MAX_EMBEDDING_SOURCE_LENGTH);
+
+    if (!truncatedText.trim()) {
+      console.log(`⚠️  Skipping report embedding for ${reportRecord.id}: Compact text is empty after trimming.`);
       return;
     }
 
     const embeddingResponse = await openaiClient.embeddings.create({
       model: 'text-embedding-3-small',
-      input: compactText,
+      input: truncatedText,
     });
 
     const embedding = embeddingResponse?.data?.[0]?.embedding;
 
     if (!Array.isArray(embedding) || embedding.length === 0) {
+      console.log(`⚠️  Skipping report embedding for ${reportRecord.id}: No embedding returned.`);
       return;
     }
 
-    const nowIso = new Date().toISOString();
+    const { error: updateError } = await supabase
+      .from('reports')
+      .update({ embedding })
+      .eq('id', reportRecord.id);
 
-    const { error: deleteError } = await supabase
-      .from('report_embeddings')
-      .delete()
-      .eq('report_id', reportRecord.id);
-
-    if (deleteError && deleteError.code !== '42P01') {
-      console.error('Failed to prune existing report embedding:', deleteError);
+    if (updateError) {
+      console.error('❌ Failed to store report embedding:', updateError);
+      return;
     }
 
-    const { error: insertError } = await supabase.from('report_embeddings').insert([
-      {
-        report_id: reportRecord.id,
-        embedding,
-        created_at: nowIso,
-      },
-    ]);
-
-    if (insertError) {
-      console.error('Failed to persist report embedding:', insertError);
-    }
+    console.log(`✅ Report embedding saved for report ${reportRecord.id}.`);
   } catch (error) {
-    console.error('Error generating report embedding:', error);
+    console.error(`❌ Error generating report embedding for report ${reportRecord?.id || 'unknown'}:`, error);
   }
 };
 
