@@ -17,6 +17,12 @@ let globalUser = null;
 
 supabase.auth.onAuthStateChange((_event, session) => {
   globalUser = session?.user || null;
+
+  if (globalUser?.email) {
+    console.log(`✅ Supabase connected as ${globalUser.email}`);
+  } else {
+    console.warn('⚠️ No Supabase session found yet');
+  }
 });
 
 const normaliseReportState = (state) => {
