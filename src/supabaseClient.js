@@ -7,7 +7,18 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('⚠️ Supabase environment variables are missing. Authentication will not work.');
 }
 
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+let client = null;
 
-export const isSupabaseConfigured = Boolean(supabase);
+if (supabaseUrl && supabaseAnonKey) {
+  client = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  });
+}
+
+export const supabase = client;
+export const isSupabaseConfigured = Boolean(client);
 export default supabase;

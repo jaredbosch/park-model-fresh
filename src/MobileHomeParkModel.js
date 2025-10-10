@@ -942,12 +942,9 @@ const MobileHomeParkModel = () => {
       const user = session?.user;
 
       if (!user) {
-        console.warn('No user session found');
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
         setAnalyticsError('Please sign in again.');
         errorMessageSet = true;
-        setLoadingAnalytics(false);
-        setAnalyticsInitialized(true);
         return;
       }
 
