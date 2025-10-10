@@ -271,56 +271,6 @@ const DEFAULT_ANALYTICS_METRICS = {
   averageExpenseRatio: null,
 };
 
-const computeAnalyticsMetrics = (reports = []) => {
-  if (!Array.isArray(reports) || reports.length === 0) {
-    return { ...DEFAULT_ANALYTICS_METRICS };
-  }
-
-  const toNumber = (value) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : 0;
-  };
-
-  const average = (values) => {
-    if (!Array.isArray(values) || values.length === 0) {
-      return null;
-    }
-
-    const total = values.reduce(
-      (sum, value) => sum + (Number.isFinite(value) ? value : 0),
-      0
-    );
-
-    return total / values.length;
-  };
-
-  const purchasePrices = reports.map((report) => toNumber(report?.purchase_price));
-
-  const pricePerSiteValues = reports.map((report) => {
-    const purchasePrice = toNumber(report?.purchase_price);
-    const rawSites = toNumber(report?.num_lots);
-    const sites = rawSites > 0 ? rawSites : 1;
-    return sites > 0 ? purchasePrice / sites : 0;
-  });
-
-  const capRates = reports.map((report) => toNumber(report?.cap_rate));
-
-  const expenseRatios = reports.map((report) => {
-    const expenses = toNumber(report?.total_expenses);
-    const income = toNumber(report?.total_income);
-    const safeIncome = income !== 0 ? income : 1;
-    return (expenses / safeIncome) * 100;
-  });
-
-  return {
-    totalReports: reports.length,
-    averagePurchasePrice: average(purchasePrices),
-    averagePricePerSite: average(pricePerSiteValues),
-    averageCapRate: average(capRates),
-    averageExpenseRatio: average(expenseRatios),
-  };
-};
-
 const DEFAULT_PROPERTY_INFO = {
   name: 'Mobile Home Park',
   address: '',
@@ -931,19 +881,13 @@ const MobileHomeParkModel = () => {
         return;
       }
 
-      let user = globalUser;
+      const {
+        data: { user } = {},
+        error: getUserError,
+      } = await supabase.auth.getUser();
 
-      if (!user) {
-        const { data: { session } = {} } = await supabase.auth.getSession();
-        user = session?.user || null;
-      }
-
-      if (!user) {
-        const { data: userData, error: userError } = await supabase.auth.getUser();
-        if (userError) {
-          console.warn('getUser() fallback error:', userError);
-        }
-        user = userData?.user || null;
+      if (getUserError) {
+        console.warn('Supabase getUser error while fetching analytics:', getUserError);
       }
 
       if (!user) {
@@ -952,22 +896,14 @@ const MobileHomeParkModel = () => {
         return;
       }
 
-      console.log('Analytics authenticated as:', user.id);
+      const response = await fetch(`/api/fetch-analytics?userId=${encodeURIComponent(user.id)}`);
+      const json = await response.json();
 
-      const { data, error } = await supabase
-        .from('reports')
-        .select('purchase_price, num_lots, cap_rate, total_expenses, total_income')
-        .eq('user_id', user.id);
-
-      if (error) {
-        console.error('Analytics query error:', error);
-        setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
-        setAnalyticsError('Unable to load analytics right now. Please try again.');
-        return;
+      if (!response.ok) {
+        throw new Error(json.error || 'Failed to load analytics.');
       }
 
-      const metrics = computeAnalyticsMetrics(data || []);
-      setAnalyticsMetrics(metrics);
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS, ...json.metrics });
     } catch (err) {
       console.error('Analytics fetch error:', err);
       setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
