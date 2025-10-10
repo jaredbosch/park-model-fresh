@@ -908,6 +908,27 @@ const MobileHomeParkModel = () => {
     setAnalyticsInitialized(false);
   }, [sessionUserId, isSupabaseConfigured]);
 
+  async function waitForValidSession(maxRetries = 10, interval = 300) {
+    for (let i = 0; i < maxRetries; i += 1) {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        console.log('waitForValidSession iteration:', i, 'session:', session || null);
+        if (session?.user) {
+          return session;
+        }
+      } catch (err) {
+        console.warn('waitForValidSession error:', err);
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+
+    return null;
+  }
+
   const fetchAnalytics = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
       setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
@@ -925,24 +946,18 @@ const MobileHomeParkModel = () => {
     let errorMessageSet = false;
 
     try {
-
-      const {
-        data: { session } = {},
-        error: sessionError,
-      } = await supabase.auth.getSession();
+      const session = await waitForValidSession();
 
       console.log('Analytics session result:', session || null);
-      console.log('Analytics session error:', sessionError || null);
 
-      if (sessionError) {
-        if (sessionError?.status === 401) {
-          setAnalyticsError('Please sign in again.');
-          errorMessageSet = true;
-        }
-        throw sessionError;
+      if (!session?.user) {
+        setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+        setAnalyticsError('Please sign in again.');
+        errorMessageSet = true;
+        return;
       }
 
-      const user = session?.user;
+      const user = session.user;
 
       console.log('Analytics session user:', user || null);
 
