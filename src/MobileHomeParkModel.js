@@ -13,6 +13,12 @@ import { supabase, isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
 import { useToast } from './components/ToastProvider';
 
+let globalUser = null;
+
+supabase.auth.onAuthStateChange((_event, session) => {
+  globalUser = session?.user || null;
+});
+
 const normaliseReportState = (state) => {
   if (!state) {
     return null;
@@ -908,104 +914,63 @@ const MobileHomeParkModel = () => {
     setAnalyticsInitialized(false);
   }, [sessionUserId, isSupabaseConfigured]);
 
-  async function waitForValidSession(maxRetries = 10, interval = 300) {
-    for (let i = 0; i < maxRetries; i += 1) {
-      try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        console.log('waitForValidSession iteration:', i, 'session:', session || null);
-        if (session?.user) {
-          return session;
-        }
-      } catch (err) {
-        console.warn('waitForValidSession error:', err);
-        break;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, interval));
-    }
-
-    return null;
-  }
-
   const fetchAnalytics = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
-      setAnalyticsError(
-        'Supabase is not configured. Add your Supabase credentials to enable analytics.'
-      );
-      setLoadingAnalytics(false);
-      setAnalyticsInitialized(true);
-      return;
-    }
-
-    setLoadingAnalytics(true);
-    setAnalyticsError('');
-
-    let errorMessageSet = false;
-
     try {
-      const session = await waitForValidSession();
+      setLoadingAnalytics(true);
+      setAnalyticsError(null);
 
-      console.log('Analytics session result:', session || null);
-
-      if (!session?.user) {
+      if (!supabase || !isSupabaseConfigured) {
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
-        setAnalyticsError('Please sign in again.');
-        errorMessageSet = true;
+        setAnalyticsError('Supabase not initialized.');
         return;
       }
 
-      const user = session.user;
+      let user = globalUser;
 
-      console.log('Analytics session user:', user || null);
+      if (!user) {
+        const { data: { session } = {} } = await supabase.auth.getSession();
+        user = session?.user || null;
+      }
+
+      if (!user) {
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+        if (userError) {
+          console.warn('getUser() fallback error:', userError);
+        }
+        user = userData?.user || null;
+      }
 
       if (!user) {
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
         setAnalyticsError('Please sign in again.');
-        errorMessageSet = true;
         return;
       }
 
-      console.log('Analytics query params:', {
-        userId: user?.id || null,
-      });
+      console.log('Analytics authenticated as:', user.id);
 
       const { data, error } = await supabase
         .from('reports')
         .select('purchase_price, num_lots, cap_rate, total_expenses, total_income')
         .eq('user_id', user.id);
 
-      console.log('Analytics query error:', error || null);
-
       if (error) {
-        if (error?.status === 401) {
-          setAnalyticsError('Please sign in again.');
-          errorMessageSet = true;
-        }
-        throw error;
-      }
-
-      const metrics = computeAnalyticsMetrics(data || []);
-
-      if (!data || data.length === 0) {
+        console.error('Analytics query error:', error);
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+        setAnalyticsError('Unable to load analytics right now. Please try again.');
         return;
       }
 
+      const metrics = computeAnalyticsMetrics(data || []);
       setAnalyticsMetrics(metrics);
     } catch (err) {
       console.error('Analytics fetch error:', err);
-      if (!errorMessageSet) {
-        setAnalyticsError('Unable to load analytics right now. Please try again.');
-      }
       setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+      setAnalyticsError('Unable to load analytics right now. Please try again.');
     } finally {
       setLoadingAnalytics(false);
       setAnalyticsInitialized(true);
     }
-  }, [isSupabaseConfigured, supabase]);
+  }, [isSupabaseConfigured]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
