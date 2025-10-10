@@ -416,6 +416,8 @@ const MobileHomeParkModel = () => {
     });
   }, []);
 
+  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
+
   const sessionEmail = useMemo(
     () =>
       session?.user?.email ||
@@ -531,8 +533,6 @@ const MobileHomeParkModel = () => {
 
   // Property Information
   const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
-  // Contact info for saving reports (ensure defined to avoid runtime ReferenceError)
-  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
   const [savingReport, setSavingReport] = useState(false);
   
   // Additional Income Inputs
