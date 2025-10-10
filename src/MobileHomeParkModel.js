@@ -923,13 +923,16 @@ const MobileHomeParkModel = () => {
     setAnalyticsError('');
 
     try {
-      const { data: userResponse, error: userError } = await supabase.auth.getUser();
+      const {
+        data: { user } = {},
+        error: userError,
+      } = await supabase.auth.getUser();
 
       if (userError) {
         throw userError;
       }
 
-      const userId = userResponse?.user?.id;
+      const userId = user?.id;
 
       if (!userId) {
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
@@ -3012,6 +3015,11 @@ ${reportContent.innerHTML}
                 >
                   <RefreshCw className="h-4 w-4" aria-hidden="true" />
                   {loadingAnalytics ? 'Refreshing…' : 'Refresh'}
+                  {loadingAnalytics && (
+                    <span className="ml-2 animate-spin text-blue-500" role="status" aria-hidden="true">
+                      ⏳
+                    </span>
+                  )}
                 </button>
               </div>
 
