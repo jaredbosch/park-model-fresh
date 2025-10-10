@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { Download } from 'lucide-react';
 import supabase, { isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
+import { useToast } from './components/ToastProvider';
 
 const normaliseReportState = (state) => {
   if (!state) {
@@ -275,6 +276,7 @@ const generateUniqueLabel = (baseLabel, existingLabels = []) => {
   return candidate;
 };
 const MobileHomeParkModel = () => {
+  const { showToast } = useToast();
   const [session, setSession] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [savedReports, setSavedReports] = useState([]);
@@ -2253,8 +2255,9 @@ ${reportContent.innerHTML}
     return { ok: true, contact: preparedByContact };
   }, [preparedByContact]);
 
-  const saveReportToAccount = useCallback(async ({ htmlContent, showAlert = true } = {}) => {
+  const saveReportToAccount = useCallback(async ({ htmlContent } = {}) => {
     if (!isSupabaseConfigured || !supabase) {
+      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
       alert('Supabase is not configured. Please add your Supabase credentials to enable saving reports.');
       return false;
     }
@@ -2268,12 +2271,14 @@ ${reportContent.innerHTML}
       }
 
       console.error('Error verifying Supabase authentication before saving:', err);
+      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
       alert('Unable to verify your authentication status. Please try signing in again.');
       return false;
     }
 
     const finalHtml = htmlContent || buildReportHtml();
     if (!finalHtml) {
+      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
       alert('Unable to capture the report content for saving.');
       return false;
     }
@@ -2379,6 +2384,8 @@ ${reportContent.innerHTML}
           detailParts.push(detailMessage);
         }
 
+        showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
+
         alert(
           ['Failed to save the report to your account.', ...detailParts]
             .filter(Boolean)
@@ -2393,6 +2400,11 @@ ${reportContent.innerHTML}
 
       if (warnings.length > 0) {
         console.warn('Report saved with warnings:', warnings);
+        warnings.forEach((warning) => {
+          if (typeof warning === 'string' && warning.trim()) {
+            showToast({ message: warning, tone: 'warning' });
+          }
+        });
       }
 
       const savedRow = Array.isArray(result.data) ? result.data[0] : result.data;
@@ -2405,13 +2417,7 @@ ${reportContent.innerHTML}
       }
 
       await fetchSavedReports();
-
-      if (showAlert) {
-        const message = warnings.length > 0
-          ? ['Report saved to your account.', ...warnings].join('\n\n')
-          : 'Report saved to your account.';
-        alert(message);
-      }
+      showToast({ message: '💾 Report saved successfully.', tone: 'success' });
 
       return true;
     } catch (err) {
@@ -2421,6 +2427,7 @@ ${reportContent.innerHTML}
 
       console.error('Error saving report:', err);
       const message = err?.message ? `\n\n${err.message}` : '';
+      showToast({ message: '⚠️ Failed to save report.', tone: 'error' });
       alert(`Failed to save the report to your account.${message}`);
       return false;
     } finally {
@@ -2449,6 +2456,7 @@ ${reportContent.innerHTML}
     projectionYears,
     requireAuth,
     ensurePreparedByInfo,
+    showToast,
   ]);
 
   const downloadReport = async () => {
@@ -2490,26 +2498,25 @@ ${reportContent.innerHTML}
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
     if (authUser?.id || session?.user?.id) {
-      await saveReportToAccount({ htmlContent, showAlert: false });
+      await saveReportToAccount({ htmlContent });
     }
   };
 
   const handleDeleteReport = useCallback(
-    async (reportIdString) => {
-      if (!reportIdString) {
+    async (report) => {
+      if (!report || report.id === undefined || report.id === null) {
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
         return;
       }
 
       if (!isSupabaseConfigured || !supabase) {
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
         alert('Supabase is not configured. Please add your Supabase credentials to delete saved reports.');
         return;
       }
 
-      const numericId = Number(reportIdString);
-      if (!Number.isFinite(numericId)) {
-        alert('Invalid report identifier.');
-        return;
-      }
+      const reportIdValue = report.id;
+      const reportIdString = String(reportIdValue);
 
       const confirmed = window.confirm('Are you sure you want to delete this report? This action cannot be undone.');
       if (!confirmed) {
@@ -2525,12 +2532,14 @@ ${reportContent.innerHTML}
         }
 
         console.error('Error verifying authentication before deleting report:', err);
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
         alert('Unable to verify your authentication status. Please try signing in again.');
         return;
       }
 
       const ownerId = authUser?.id || session?.user?.id;
       if (!ownerId) {
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
         alert('Unable to confirm your account. Please sign in again and retry.');
         return;
       }
@@ -2542,13 +2551,14 @@ ${reportContent.innerHTML}
         const response = await fetch(`${apiBase}/api/delete-report`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reportId: numericId, userId: ownerId }),
+          body: JSON.stringify({ id: reportIdValue }),
         });
 
         const result = await response.json();
 
         if (!response.ok || !result.success) {
           console.error('Failed to delete report:', result);
+          showToast({ message: '❌ Failed to delete report.', tone: 'error' });
           const detailMessage = result?.error || 'The report could not be deleted. Please try again.';
           alert(detailMessage);
           return;
@@ -2559,8 +2569,10 @@ ${reportContent.innerHTML}
         }
 
         await fetchSavedReports();
+        showToast({ message: '✅ Report deleted successfully.', tone: 'success' });
       } catch (err) {
         console.error('Unexpected error deleting report:', err);
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
         alert('Failed to delete the report. Please try again.');
       } finally {
         setDeletingReportId(null);
@@ -2572,6 +2584,7 @@ ${reportContent.innerHTML}
       requireAuth,
       selectedReportId,
       session,
+      showToast,
       supabase,
     ]
   );
@@ -2933,7 +2946,7 @@ ${reportContent.innerHTML}
                                       if (isLoading || isDeleting) {
                                         return;
                                       }
-                                      handleDeleteReport(reportIdString);
+                                      handleDeleteReport(report);
                                     }}
                                     disabled={isLoading || isDeleting}
                                     className={`rounded border px-3 py-1 text-sm font-semibold transition ${
@@ -4308,7 +4321,7 @@ ${reportContent.innerHTML}
                 <div className="flex flex-wrap items-center gap-3 justify-end">
                   {session?.user ? (
                     <button
-                      onClick={() => saveReportToAccount({ showAlert: true })}
+                      onClick={() => saveReportToAccount()}
                       className="rounded border border-blue-600 px-6 py-2 font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
                       disabled={savingReport}
                     >

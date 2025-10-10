@@ -209,6 +209,27 @@ async function handler(req, res) {
       return res.status(500).json({ success: false, error: 'Supabase is not configured on the server.' });
     }
 
+    if (!payload.userId) {
+      return res.status(400).json({ success: false, error: 'User ID is required to save a report.' });
+    }
+
+    const html = payload.htmlContent || payload.html || '';
+    const name = payload.reportName || payload.name || 'Untitled Report';
+    const metadata = payload.reportState || payload.metadata || null;
+
+    if (html && html.length > 60000) {
+      const { error } = await supabase
+        .from('reports')
+        .insert([{ html, name, user_id: payload.userId, metadata }]);
+
+      if (error) {
+        console.error('Supabase insert error (large html):', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to save large report.' });
+      }
+
+      return res.status(200).json({ success: true });
+    }
+
     const schemaStatus = await ensureReportsSchema();
 
     if (schemaStatus.warning) {
@@ -218,10 +239,6 @@ async function handler(req, res) {
     if (!schemaStatus.ok) {
       console.error('Supabase reports table validation failed:', schemaStatus.error);
       return res.status(500).json({ success: false, error: schemaStatus.error?.message, details: schemaStatus.error });
-    }
-
-    if (!payload.userId) {
-      return res.status(400).json({ success: false, error: 'User ID is required to save a report.' });
     }
 
     const ownerEmail = payload.contactInfo?.email || authUser.email || '';

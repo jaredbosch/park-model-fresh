@@ -21,51 +21,29 @@ async function handler(req, res) {
     });
   }
 
-  const { reportId, userId } = req.body || {};
+  const { id } = req.body || {};
 
-  const numericId = Number(reportId);
-  if (!Number.isFinite(numericId) || numericId <= 0) {
-    return res.status(400).json({ success: false, error: 'A valid reportId is required to delete a report.' });
-  }
+  const resolvedId = typeof id === 'string' ? id.trim() : id;
 
-  if (!userId || typeof userId !== 'string') {
-    return res.status(400).json({ success: false, error: 'User ID is required to delete a report.' });
+  if (
+    !resolvedId ||
+    (typeof resolvedId !== 'string' && typeof resolvedId !== 'number') ||
+    (typeof resolvedId === 'number' && !Number.isFinite(resolvedId))
+  ) {
+    return res.status(400).json({ error: 'Invalid report identifier' });
   }
 
   try {
-    const { data, error } = await supabase
-      .from('reports')
-      .delete()
-      .eq('id', numericId)
-      .eq('user_id', userId)
-      .select();
+    const { error } = await supabase.from('reports').delete().eq('id', resolvedId);
 
     if (error) {
       console.error('Supabase delete error:', error);
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to delete the report from Supabase.',
-        details: error.details || null,
-      });
+      return res.status(500).json({ error: error.message || 'Failed to delete report.' });
     }
-
-    const deletedRows = Array.isArray(data) ? data.length : 0;
-
-    if (deletedRows === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Report not found or you do not have permission to delete it.',
-      });
-    }
-
-    return res.status(200).json({ success: true, data });
+    return res.status(200).json({ success: true });
   } catch (err) {
     console.error('Unexpected error deleting report:', err);
-    return res.status(500).json({
-      success: false,
-      error: 'Unexpected error deleting the report.',
-      details: err.message || null,
-    });
+    return res.status(500).json({ error: 'Unexpected error deleting the report.' });
   }
 }
 
