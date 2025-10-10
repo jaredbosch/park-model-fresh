@@ -264,53 +264,48 @@ const computeAnalyticsMetrics = (reports = []) => {
     return { ...DEFAULT_ANALYTICS_METRICS };
   }
 
-  let totalPurchasePrice = 0;
-  let purchasePriceCount = 0;
-  let totalPricePerSite = 0;
-  let pricePerSiteCount = 0;
-  let totalCapRate = 0;
-  let capRateCount = 0;
-  let totalExpenseRatio = 0;
-  let expenseRatioCount = 0;
+  const toNumber = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  };
 
-  reports.forEach((report) => {
-    const state = normaliseReportState(report?.report_state);
-
-    const purchasePrice = resolvePurchasePrice(report, state);
-    if (Number.isFinite(purchasePrice)) {
-      totalPurchasePrice += purchasePrice;
-      purchasePriceCount += 1;
+  const average = (values) => {
+    if (!Array.isArray(values) || values.length === 0) {
+      return null;
     }
 
-    const siteCount = resolveSiteCount(report, state);
-    if (Number.isFinite(purchasePrice) && Number.isFinite(siteCount) && siteCount > 0) {
-      totalPricePerSite += purchasePrice / siteCount;
-      pricePerSiteCount += 1;
-    }
+    const total = values.reduce(
+      (sum, value) => sum + (Number.isFinite(value) ? value : 0),
+      0
+    );
 
-    const capRate = resolveCapRate(report, state);
-    if (Number.isFinite(capRate)) {
-      totalCapRate += capRate;
-      capRateCount += 1;
-    }
+    return total / values.length;
+  };
 
-    const totalIncome = resolveTotalIncome(report, state);
-    const totalExpenses = resolveTotalExpenses(report, state);
-    if (Number.isFinite(totalIncome) && totalIncome > 0 && Number.isFinite(totalExpenses)) {
-      totalExpenseRatio += (totalExpenses / totalIncome) * 100;
-      expenseRatioCount += 1;
-    }
+  const purchasePrices = reports.map((report) => toNumber(report?.purchase_price));
+
+  const pricePerSiteValues = reports.map((report) => {
+    const purchasePrice = toNumber(report?.purchase_price);
+    const rawSites = toNumber(report?.num_lots);
+    const sites = rawSites > 0 ? rawSites : 1;
+    return sites > 0 ? purchasePrice / sites : 0;
+  });
+
+  const capRates = reports.map((report) => toNumber(report?.cap_rate));
+
+  const expenseRatios = reports.map((report) => {
+    const expenses = toNumber(report?.total_expenses);
+    const income = toNumber(report?.total_income);
+    const safeIncome = income !== 0 ? income : 1;
+    return (expenses / safeIncome) * 100;
   });
 
   return {
     totalReports: reports.length,
-    averagePurchasePrice:
-      purchasePriceCount > 0 ? totalPurchasePrice / purchasePriceCount : null,
-    averagePricePerSite:
-      pricePerSiteCount > 0 ? totalPricePerSite / pricePerSiteCount : null,
-    averageCapRate: capRateCount > 0 ? totalCapRate / capRateCount : null,
-    averageExpenseRatio:
-      expenseRatioCount > 0 ? totalExpenseRatio / expenseRatioCount : null,
+    averagePurchasePrice: average(purchasePrices),
+    averagePricePerSite: average(pricePerSiteValues),
+    averageCapRate: average(capRates),
+    averageExpenseRatio: average(expenseRatios),
   };
 };
 
@@ -919,13 +914,7 @@ const MobileHomeParkModel = () => {
       setAnalyticsError(
         'Supabase is not configured. Add your Supabase credentials to enable analytics.'
       );
-      setAnalyticsInitialized(true);
-      return;
-    }
-
-    if (!sessionUserId) {
-      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
-      setAnalyticsError('');
+      setLoadingAnalytics(false);
       setAnalyticsInitialized(true);
       return;
     }
@@ -934,10 +923,24 @@ const MobileHomeParkModel = () => {
     setAnalyticsError('');
 
     try {
+      const { data: userResponse, error: userError } = await supabase.auth.getUser();
+
+      if (userError) {
+        throw userError;
+      }
+
+      const userId = userResponse?.user?.id;
+
+      if (!userId) {
+        setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+        setAnalyticsError('');
+        return;
+      }
+
       const { data, error } = await supabase
         .from('reports')
-        .select('id, report_state, report_name')
-        .eq('user_id', sessionUserId);
+        .select('purchase_price, num_lots, cap_rate, total_expenses, total_income')
+        .eq('user_id', userId);
 
       if (error) {
         throw error;
@@ -945,16 +948,15 @@ const MobileHomeParkModel = () => {
 
       const metrics = computeAnalyticsMetrics(data || []);
       setAnalyticsMetrics(metrics);
-      setAnalyticsError('');
     } catch (err) {
-      console.error('Failed to load analytics metrics:', err);
+      console.error('Analytics fetch error:', err);
       setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
       setAnalyticsError('Unable to load analytics right now. Please try again.');
     } finally {
       setLoadingAnalytics(false);
       setAnalyticsInitialized(true);
     }
-  }, [sessionUserId]);
+  }, [isSupabaseConfigured, supabase]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -2997,9 +2999,9 @@ ${reportContent.innerHTML}
             <div className="space-y-6">
               <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="text-2xl font-bold text-gray-800">Portfolio Analytics</h2>
+                  <h2 className="text-2xl font-bold text-gray-800">Analytics</h2>
                   <p className="text-sm text-gray-600">
-                    Aggregate metrics for every report saved to your account.
+                    Aggregate metrics for all reports saved to your account.
                   </p>
                 </div>
                 <button
