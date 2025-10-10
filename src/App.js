@@ -145,6 +145,9 @@ const AppRoutes = () => {
   );
 };
 
+const APP_HASH = '#/app';
+const LANDING_HASH = '#/';
+
 function App() {
   return (
     <BrowserRouter>
