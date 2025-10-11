@@ -73,6 +73,9 @@ const LandingPage = ({ onTryItNow, supabase }) => {
             <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl md:text-6xl">
               Build high-conviction mobile home park models in minutes
             </h1>
+            <p className="text-base text-slate-400 md:text-lg">
+              No more messy Excel models or files—software-based, all in one place.
+            </p>
             <p className="max-w-2xl text-lg text-slate-300 md:text-xl">
               Analyze occupancy, cash flow, financing, and disposition scenarios with a guided workflow. Reports are saved securely to your account for easy sharing with partners and investors.
             </p>
@@ -104,7 +107,7 @@ const LandingPage = ({ onTryItNow, supabase }) => {
             </div>
             <div className="grid grid-cols-2 gap-8 rounded-3xl border border-slate-800 bg-slate-900/60 p-6 text-sm text-slate-300 sm:text-base md:grid-cols-4">
               <div>
-                <p className="text-lg font-semibold text-white">65 lots</p>
+                <p className="text-lg font-semibold text-white">Flexible rent roll</p>
                 <p>Flexible rent roll modeling with bulk edits.</p>
               </div>
               <div>

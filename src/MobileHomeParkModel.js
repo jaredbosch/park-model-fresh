@@ -1,7 +1,30 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
-import { Download } from 'lucide-react';
-import supabase, { isSupabaseConfigured } from './supabaseClient';
+import {
+  Download,
+  RefreshCw,
+  Share2,
+  BarChart3,
+  DollarSign,
+  Home as HomeIcon,
+  Percent,
+  PieChart,
+} from 'lucide-react';
+import { supabase, isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
+import ProfileModal from './components/ProfileModal';
+import { useToast } from './components/ToastProvider';
+
+let globalUser = null;
+
+supabase.auth.onAuthStateChange((_event, session) => {
+  globalUser = session?.user || null;
+
+  if (globalUser?.email) {
+    console.log(`✅ Supabase connected as ${globalUser.email}`);
+  } else {
+    console.warn('⚠️ No Supabase session found yet');
+  }
+});
 
 const normaliseReportState = (state) => {
   if (!state) {
@@ -60,6 +83,58 @@ const resolveCity = (report, stateOverride = undefined) => {
   return typeof rawCity === 'string' ? rawCity.trim() : '';
 };
 
+const resolveState = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+  const rawState = state?.propertyInfo?.state || report?.park_state || '';
+  return typeof rawState === 'string' ? rawState.trim() : '';
+};
+
+const resolveSiteCount = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [
+    state?.propertyInfo?.totalLots,
+    state?.calculations?.totalUnits,
+    report?.total_lots,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+
+    if (typeof candidate === 'string') {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+};
+
+const slugify = (value) => {
+  if (!value) {
+    return 'report';
+  }
+
+  const slug = value
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || 'report';
+};
+
 const resolvePurchasePrice = (report, stateOverride = undefined) => {
   const state =
     stateOverride !== undefined
@@ -116,11 +191,93 @@ const resolveReportDateValue = (report, stateOverride = undefined) => {
   return null;
 };
 
+const coerceNumber = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+};
+
+const resolveCapRate = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [report?.cap_rate, state?.calculations?.capRate];
+
+  for (const candidate of candidates) {
+    const numeric = coerceNumber(candidate);
+    if (numeric !== null) {
+      return numeric;
+    }
+  }
+
+  return null;
+};
+
+const resolveTotalIncome = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [
+    report?.total_income,
+    state?.calculations?.effectiveGrossIncome,
+    state?.calculations?.totalIncome,
+  ];
+
+  for (const candidate of candidates) {
+    const numeric = coerceNumber(candidate);
+    if (numeric !== null) {
+      return numeric;
+    }
+  }
+
+  return null;
+};
+
+const resolveTotalExpenses = (report, stateOverride = undefined) => {
+  const state =
+    stateOverride !== undefined
+      ? stateOverride
+      : normaliseReportState(report?.report_state);
+
+  const candidates = [report?.total_expenses, state?.calculations?.totalOpEx];
+
+  for (const candidate of candidates) {
+    const numeric = coerceNumber(candidate);
+    if (numeric !== null) {
+      return numeric;
+    }
+  }
+
+  return null;
+};
+
+const DEFAULT_ANALYTICS_METRICS = {
+  totalReports: 0,
+  averagePurchasePrice: null,
+  averagePricePerSite: null,
+  averageCapRate: null,
+  averageExpenseRatio: null,
+};
+
 const DEFAULT_PROPERTY_INFO = {
   name: 'Mobile Home Park',
   address: '',
   city: '',
-  state: ''
+  state: '',
+  totalLots: '',
 };
 
 const DEFAULT_CONTACT_INFO = {
@@ -135,6 +292,7 @@ const DEFAULT_PURCHASE_INPUTS = {
   closingCosts: 25000,
   downPaymentPercent: 25,
   interestRate: 6.5,
+  amortizationYears: 25,
   loanTermYears: 25,
   interestOnlyPeriodYears: 0,
 };
@@ -221,6 +379,7 @@ const generateUniqueLabel = (baseLabel, existingLabels = []) => {
   return candidate;
 };
 const MobileHomeParkModel = () => {
+  const { showToast } = useToast();
   const [session, setSession] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [savedReports, setSavedReports] = useState([]);
@@ -228,6 +387,13 @@ const MobileHomeParkModel = () => {
   const [selectedReportId, setSelectedReportId] = useState('');
   const [loadingReports, setLoadingReports] = useState(false);
   const [loadingReportId, setLoadingReportId] = useState(null);
+  const [deletingReportId, setDeletingReportId] = useState(null);
+  const [analyticsMetrics, setAnalyticsMetrics] = useState({
+    ...DEFAULT_ANALYTICS_METRICS,
+  });
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState('');
+  const [analyticsInitialized, setAnalyticsInitialized] = useState(false);
   const [reportName, setReportName] = useState('Mobile Home Park Report');
   const [quickPopulateRows, setQuickPopulateRows] = useState([
     {
@@ -324,6 +490,13 @@ const MobileHomeParkModel = () => {
           return compareText(resolveReportName(aReport), resolveReportName(bReport));
         case 'city':
           return compareText(resolveCity(aReport), resolveCity(bReport));
+        case 'state':
+          return compareText(resolveState(aReport), resolveState(bReport));
+        case 'sites':
+          return compareNumber(
+            resolveSiteCount(aReport),
+            resolveSiteCount(bReport)
+          );
         case 'price':
           return compareNumber(
             resolvePurchasePrice(aReport),
@@ -354,6 +527,48 @@ const MobileHomeParkModel = () => {
     });
   }, []);
 
+  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
+  const [profileDefaults, setProfileDefaults] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  const handleProfileUpdated = useCallback((defaults) => {
+    if (!defaults || typeof defaults !== 'object') {
+      setProfileDefaults(null);
+      return;
+    }
+
+    const normalised = {
+      name: defaults.name || '',
+      company: defaults.company || '',
+      phone: defaults.phone || '',
+      email: defaults.email || '',
+    };
+
+    setProfileDefaults((previous) => {
+      setContactInfo((current) => {
+        const next = { ...current };
+        let changed = false;
+
+        ['name', 'company', 'phone', 'email'].forEach((field) => {
+          const nextValue = normalised[field] || '';
+          const prevValue = previous ? previous[field] || '' : '';
+          const currentValue = current[field] || '';
+
+          if (!currentValue || (!prevValue && nextValue) || currentValue === prevValue) {
+            if (nextValue && currentValue !== nextValue) {
+              next[field] = nextValue;
+              changed = true;
+            }
+          }
+        });
+
+        return changed ? next : current;
+      });
+
+      return normalised;
+    });
+  }, []);
+
   const sessionEmail = useMemo(
     () =>
       session?.user?.email ||
@@ -362,6 +577,40 @@ const MobileHomeParkModel = () => {
       '',
     [session]
   );
+
+  useEffect(() => {
+    if (!session?.user) {
+      handleProfileUpdated(null);
+      setContactInfo({ ...DEFAULT_CONTACT_INFO });
+      setProfileOpen(false);
+    }
+  }, [handleProfileUpdated, session?.user]);
+
+  const preparedByContact = useMemo(() => {
+    const metadata = session?.user?.user_metadata || {};
+
+    const resolveString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+    const emailCandidates = [
+      contactInfo.email,
+      profileDefaults?.email,
+      metadata.email,
+      metadata.email_address,
+      session?.user?.email,
+      sessionEmail,
+    ];
+
+    const resolvedEmail = emailCandidates
+      .map(resolveString)
+      .find((value) => Boolean(value)) || '';
+
+    return {
+      name: resolveString(contactInfo.name),
+      company: resolveString(contactInfo.company),
+      email: resolvedEmail,
+      phone: resolveString(contactInfo.phone),
+    };
+  }, [contactInfo, profileDefaults, session, sessionEmail]);
 
   const hasValidQuickPopulateRows = useMemo(
     () =>
@@ -444,8 +693,6 @@ const MobileHomeParkModel = () => {
 
   // Property Information
   const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
-  // Contact info for saving reports (ensure defined to avoid runtime ReferenceError)
-  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
   const [savingReport, setSavingReport] = useState(false);
   
   // Additional Income Inputs
@@ -665,6 +912,72 @@ const MobileHomeParkModel = () => {
   const sessionUserId = session?.user?.id || null;
 
   useEffect(() => {
+    if (!sessionUserId) {
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+      setAnalyticsError('');
+    }
+
+    setAnalyticsInitialized(false);
+  }, [sessionUserId, isSupabaseConfigured]);
+
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      setLoadingAnalytics(true);
+      setAnalyticsError(null);
+
+      if (!supabase || !isSupabaseConfigured) {
+        setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+        setAnalyticsError('Supabase not initialized.');
+        return;
+      }
+
+      const {
+        data: { user } = {},
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+        setAnalyticsError('Please sign in again.');
+        return;
+      }
+
+      const response = await fetch(`/api/fetch-analytics?userId=${user.id}`);
+      const contentType = response.headers.get('content-type');
+
+      if (!response.ok) {
+        const msg = `Server responded ${response.status}`;
+        throw new Error(msg);
+      }
+
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        throw new Error(`Unexpected response: ${text.substring(0, 100)}`);
+      }
+
+      const payload = await response.json();
+
+      if (payload && typeof payload === 'object' && payload.error) {
+        throw new Error(payload.error);
+      }
+
+      const metrics =
+        payload && typeof payload === 'object' && payload.metrics
+          ? payload.metrics
+          : payload;
+
+      console.log('✅ Loaded analytics metrics:', metrics);
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS, ...metrics });
+    } catch (err) {
+      console.error('❌ Analytics fetch error:', err);
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
+      setAnalyticsError('Unable to load analytics right now. Please try again.');
+    } finally {
+      setLoadingAnalytics(false);
+      setAnalyticsInitialized(true);
+    }
+  }, [isSupabaseConfigured]);
+
+  useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
       setSession(null);
       return;
@@ -711,10 +1024,136 @@ const MobileHomeParkModel = () => {
   }, [sessionUserId]);
 
   useEffect(() => {
-    if (!session?.user && activeTab === 'my-reports') {
+    if (!session?.user && (activeTab === 'my-reports' || activeTab === 'analytics')) {
       setActiveTab('rent-roll');
     }
   }, [session?.user, activeTab]);
+
+  useEffect(() => {
+    if (!session?.user?.id || !isSupabaseConfigured || !supabase) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const ensureAndLoadProfile = async () => {
+      const userId = session.user.id;
+      const emailCandidate =
+        sessionEmail ||
+        session.user.email ||
+        session.user.user_metadata?.email ||
+        session.user.user_metadata?.email_address ||
+        '';
+
+      try {
+        await supabase
+          .from('profiles')
+          .upsert(
+            {
+              id: userId,
+              email: emailCandidate || null,
+            },
+            { onConflict: 'id' }
+          );
+      } catch (ensureError) {
+        console.warn('Unable to ensure Supabase profile exists:', ensureError);
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('name, company, phone, email')
+          .eq('id', userId)
+          .single();
+
+        if (!isMounted) {
+          return;
+        }
+
+        if (error) {
+          const code = error?.code || error?.details;
+          if (code && code !== 'PGRST116') {
+            throw error;
+          }
+
+          handleProfileUpdated({
+            name: '',
+            company: '',
+            phone: '',
+            email: emailCandidate || '',
+          });
+          return;
+        }
+
+        handleProfileUpdated({
+          name: data?.name || '',
+          company: data?.company || '',
+          phone: data?.phone || '',
+          email: data?.email || emailCandidate || '',
+        });
+      } catch (fetchError) {
+        if (isMounted) {
+          console.error('Error fetching Supabase profile:', fetchError);
+        }
+      }
+    };
+
+    ensureAndLoadProfile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [handleProfileUpdated, isSupabaseConfigured, session, session?.user?.id, sessionEmail, supabase]);
+
+  useEffect(() => {
+    if (activeTab !== 'analytics') {
+      return;
+    }
+
+    if (!analyticsInitialized) {
+      fetchAnalytics();
+    }
+  }, [activeTab, analyticsInitialized, fetchAnalytics]);
+
+  useEffect(() => {
+    if (!session?.user) {
+      return;
+    }
+
+    const metadata = session.user.user_metadata || {};
+
+    setContactInfo((prev) => {
+      const next = { ...prev };
+      let changed = false;
+
+      const assignIfEmpty = (key, value) => {
+        if (next[key]) {
+          return;
+        }
+
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (trimmed) {
+            next[key] = trimmed;
+            changed = true;
+          }
+        }
+      };
+
+      assignIfEmpty('name', metadata.full_name || metadata.name || metadata.user_name);
+      assignIfEmpty('company', metadata.company || metadata.organization);
+      assignIfEmpty('phone', metadata.phone || metadata.phone_number || metadata.phoneNumber);
+      assignIfEmpty(
+        'email',
+        metadata.email ||
+          metadata.email_address ||
+          session.user.email ||
+          sessionEmail
+      );
+
+      return changed ? next : prev;
+    });
+  }, [session, sessionEmail]);
 
   const savedReportCount = savedReports.length;
 
@@ -755,6 +1194,10 @@ const MobileHomeParkModel = () => {
 
     fetchSavedReportsRef.current();
   }, [session]);
+
+  const handleRefreshAnalytics = useCallback(() => {
+    fetchAnalytics();
+  }, [fetchAnalytics]);
 
   const handleSignOut = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -822,14 +1265,50 @@ const MobileHomeParkModel = () => {
         setUnits(resolvedUnits);
       }
 
+      const normaliseSiteCount = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return value;
+        }
+
+        if (typeof value === 'string') {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+
+        return null;
+      };
+
+      const fallbackSiteCount =
+        normaliseSiteCount(savedState?.propertyInfo?.totalLots) ??
+        normaliseSiteCount(savedState?.calculations?.totalUnits) ??
+        normaliseSiteCount(data.total_lots) ??
+        (Array.isArray(resolvedUnits) ? resolvedUnits.length : null);
+
       if (savedState?.propertyInfo) {
-        setPropertyInfo(savedState.propertyInfo);
+        setPropertyInfo((prev) => {
+          const next = {
+            ...prev,
+            ...savedState.propertyInfo,
+          };
+
+          if (
+            fallbackSiteCount !== null &&
+            (next.totalLots === undefined || next.totalLots === '' || !Number.isFinite(Number(next.totalLots)))
+          ) {
+            next.totalLots = fallbackSiteCount;
+          }
+
+          return next;
+        });
       } else {
         setPropertyInfo({
           name: data.report_name || data.park_name || DEFAULT_PROPERTY_INFO.name,
           address: data.park_address || '',
           city: data.park_city || '',
           state: data.park_state || '',
+          totalLots: fallbackSiteCount ?? '',
         });
       }
 
@@ -885,6 +1364,10 @@ const MobileHomeParkModel = () => {
           downPaymentPercent:
             data.down_payment_percent ?? DEFAULT_PURCHASE_INPUTS.downPaymentPercent,
           interestRate: data.interest_rate ?? DEFAULT_PURCHASE_INPUTS.interestRate,
+          amortizationYears:
+            data.amortization_years ??
+            data.loan_term_years ??
+            DEFAULT_PURCHASE_INPUTS.amortizationYears,
           loanTermYears: data.loan_term_years ?? DEFAULT_PURCHASE_INPUTS.loanTermYears,
           interestOnlyPeriodYears:
             data.interest_only_period_years ?? DEFAULT_PURCHASE_INPUTS.interestOnlyPeriodYears,
@@ -1454,14 +1937,22 @@ const MobileHomeParkModel = () => {
     const loanAmount = totalInvestment - downPayment;
     const annualRate = purchaseInputs.interestRate / 100;
     const monthlyRate = annualRate / 12;
+    const amortizationYears = Number(purchaseInputs.amortizationYears) || 0;
+    const amortizationMonthsTotal = Math.max(Math.round(amortizationYears * 12), 0);
     const totalTermYears = Number(purchaseInputs.loanTermYears) || 0;
     const totalTermMonths = Math.max(Math.round(totalTermYears * 12), 0);
-    const interestOnlyYears = Math.max(
-      0,
-      Math.min(Number(purchaseInputs.interestOnlyPeriodYears) || 0, totalTermYears)
+    const requestedInterestOnlyYears = Number(purchaseInputs.interestOnlyPeriodYears) || 0;
+    const maxInterestOnlyYears = amortizationYears > 0
+      ? Math.min(totalTermYears, amortizationYears)
+      : totalTermYears;
+    const interestOnlyYears = Math.max(0, Math.min(requestedInterestOnlyYears, maxInterestOnlyYears));
+    const interestOnlyMonths = Math.min(
+      Math.round(interestOnlyYears * 12),
+      totalTermMonths,
+      amortizationMonthsTotal > 0 ? amortizationMonthsTotal : totalTermMonths
     );
-    const interestOnlyMonths = Math.min(Math.round(interestOnlyYears * 12), totalTermMonths);
-    const amortizationMonths = Math.max(totalTermMonths - interestOnlyMonths, 0);
+    const amortizationMonthsForPayment =
+      amortizationMonthsTotal > 0 ? Math.max(amortizationMonthsTotal - interestOnlyMonths, 0) : 0;
 
     let interestOnlyMonthlyPayment = 0;
     if (loanAmount > 0) {
@@ -1469,12 +1960,12 @@ const MobileHomeParkModel = () => {
     }
 
     let amortizingMonthlyPayment = 0;
-    if (loanAmount > 0 && amortizationMonths > 0) {
+    if (loanAmount > 0 && amortizationMonthsForPayment > 0) {
       if (monthlyRate > 0) {
-        const factor = Math.pow(1 + monthlyRate, amortizationMonths);
+        const factor = Math.pow(1 + monthlyRate, amortizationMonthsForPayment);
         amortizingMonthlyPayment = (loanAmount * monthlyRate * factor) / (factor - 1);
       } else {
-        amortizingMonthlyPayment = loanAmount / amortizationMonths;
+        amortizingMonthlyPayment = loanAmount / amortizationMonthsForPayment;
       }
     } else if (loanAmount > 0) {
       amortizingMonthlyPayment = interestOnlyMonthlyPayment;
@@ -1502,7 +1993,7 @@ const MobileHomeParkModel = () => {
         interestPayment = remainingBalance * monthlyRate;
         if (withinInterestOnly) {
           payment = interestOnlyMonthlyPayment;
-        } else if (amortizationMonths > 0) {
+        } else if (amortizationMonthsForPayment > 0) {
           payment = amortizingMonthlyPayment;
         } else {
           payment = interestPayment;
@@ -1511,7 +2002,7 @@ const MobileHomeParkModel = () => {
         interestPayment = 0;
         if (withinInterestOnly) {
           payment = 0;
-        } else if (amortizationMonths > 0) {
+        } else if (amortizationMonthsForPayment > 0) {
           payment = amortizingMonthlyPayment;
         } else {
           payment = 0;
@@ -1574,6 +2065,10 @@ const MobileHomeParkModel = () => {
       annualDebtServiceSchedule[0]?.totalPayment ||
       loanSchedule.slice(0, 12).reduce((sum, entry) => sum + entry.payment, 0);
     const firstMonthPayment = loanSchedule[0]?.payment || 0;
+    const maturityBalance =
+      loanSchedule.length > 0
+        ? loanSchedule[loanSchedule.length - 1]?.remainingBalance ?? loanAmount
+        : loanAmount;
 
     // 5/7/10-Year Proforma Calculations
     const projectionCount = Number.isFinite(Number(projectionYears))
@@ -1853,6 +2348,9 @@ const MobileHomeParkModel = () => {
       interestOnlyMonthlyPayment,
       postInterestOnlyMonthlyPayment: amortizingMonthlyPayment,
       interestOnlyPeriodYears: interestOnlyYears,
+      loanMaturityBalance: maturityBalance,
+      amortizationYears,
+      loanTermYears: totalTermYears,
       projectionYears: projectionCount,
     };
   }, [
@@ -1881,6 +2379,49 @@ const MobileHomeParkModel = () => {
   const formatPercent = (value) => {
     return `${value.toFixed(2)}%`;
   };
+
+  const analyticsCardData = [
+    {
+      id: 'totalReports',
+      label: 'Total Reports',
+      value: analyticsMetrics.totalReports,
+      icon: BarChart3,
+      accentClass: 'bg-blue-100 text-blue-600',
+      formatValue: (value) => value.toLocaleString('en-US'),
+    },
+    {
+      id: 'averagePurchasePrice',
+      label: 'Average Purchase Price',
+      value: analyticsMetrics.averagePurchasePrice,
+      icon: DollarSign,
+      accentClass: 'bg-emerald-100 text-emerald-600',
+      formatValue: (value) => formatCurrency(value),
+    },
+    {
+      id: 'averagePricePerSite',
+      label: 'Average Price per Site',
+      value: analyticsMetrics.averagePricePerSite,
+      icon: HomeIcon,
+      accentClass: 'bg-indigo-100 text-indigo-600',
+      formatValue: (value) => formatCurrency(value),
+    },
+    {
+      id: 'averageCapRate',
+      label: 'Average Cap Rate',
+      value: analyticsMetrics.averageCapRate,
+      icon: Percent,
+      accentClass: 'bg-purple-100 text-purple-600',
+      formatValue: (value) => formatPercent(value),
+    },
+    {
+      id: 'averageExpenseRatio',
+      label: 'Average Expense Ratio',
+      value: analyticsMetrics.averageExpenseRatio,
+      icon: PieChart,
+      accentClass: 'bg-amber-100 text-amber-600',
+      formatValue: (value) => formatPercent(value),
+    },
+  ];
 
   const describeRentIncrease = (year) => {
     if (!year || typeof year !== 'object') {
@@ -1912,6 +2453,14 @@ const MobileHomeParkModel = () => {
 
     return parts.join(' ');
   };
+
+  const proformaSnapshotYears = useMemo(() => {
+    const years = Array.isArray(calculations?.proformaYears)
+      ? calculations.proformaYears
+      : [];
+
+    return years.slice(0, Math.min(5, years.length));
+  }, [calculations]);
 
   const lastProformaYear =
     calculations.proformaYears.length > 0
@@ -1970,6 +2519,7 @@ const MobileHomeParkModel = () => {
     .text-xl { font-size: 1.25rem; }
     .text-lg { font-size: 1.125rem; }
     .font-bold { font-weight: 700; }
+    .font-semibold { font-weight: 600; }
     .text-gray-900 { color: #111827; }
     .text-gray-700 { color: #374151; }
     .text-gray-600 { color: #4b5563; }
@@ -2017,6 +2567,7 @@ const MobileHomeParkModel = () => {
     .text-red-600 { color: #dc2626; }
     .text-orange-800 { color: #9a3412; }
     .text-indigo-700 { color: #4338ca; }
+    .break-words { overflow-wrap: anywhere; word-break: break-word; }
     .space-y-2 > * + * { margin-top: 0.5rem; }
     .space-y-3 > * + * { margin-top: 0.75rem; }
     .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
@@ -2046,8 +2597,43 @@ ${reportContent.innerHTML}
 </html>`;
   };
 
-  const saveReportToAccount = useCallback(async ({ htmlContent, showAlert = true } = {}) => {
+  const ensurePreparedByInfo = useCallback(() => {
+    const resolvedContact = { ...preparedByContact };
+
+    if (profileDefaults) {
+      const updates = {};
+      let changed = false;
+
+      ['name', 'company', 'email', 'phone'].forEach((field) => {
+        if (!resolvedContact[field] && profileDefaults[field]) {
+          resolvedContact[field] = profileDefaults[field];
+          updates[field] = profileDefaults[field];
+          changed = true;
+        }
+      });
+
+      if (changed) {
+        setContactInfo((current) => ({ ...current, ...updates }));
+      }
+    }
+
+    const missingFields = Object.entries(resolvedContact)
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+
+    if (missingFields.length > 0) {
+      alert(
+        'Please complete the Prepared By contact information (name, company, email, and phone) before saving the report.'
+      );
+      return { ok: false, contact: resolvedContact };
+    }
+
+    return { ok: true, contact: resolvedContact };
+  }, [preparedByContact, profileDefaults]);
+
+  const saveReportToAccount = useCallback(async ({ htmlContent } = {}) => {
     if (!isSupabaseConfigured || !supabase) {
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert('Supabase is not configured. Please add your Supabase credentials to enable saving reports.');
       return false;
     }
@@ -2061,23 +2647,27 @@ ${reportContent.innerHTML}
       }
 
       console.error('Error verifying Supabase authentication before saving:', err);
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert('Unable to verify your authentication status. Please try signing in again.');
       return false;
     }
 
     const finalHtml = htmlContent || buildReportHtml();
     if (!finalHtml) {
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert('Unable to capture the report content for saving.');
+      return false;
+    }
+
+    const { ok: hasPreparedInfo, contact: preparedContact } = ensurePreparedByInfo();
+    if (!hasPreparedInfo) {
       return false;
     }
 
     const effectiveReportName = (reportName && reportName.trim()) || propertyInfo.name || 'Untitled Report';
     const normalizedReportId = selectedReportId ? Number(selectedReportId) : null;
 
-    const effectiveContactInfo = {
-      ...contactInfo,
-      email: contactInfo?.email || sessionEmail || authUser?.email || '',
-    };
+    const effectiveContactInfo = preparedContact;
 
     const propertyDetails = {
       ...propertyInfo,
@@ -2098,6 +2688,7 @@ ${reportContent.innerHTML}
       interestOnlyMonthlyPayment: calculations.interestOnlyMonthlyPayment,
       postInterestOnlyMonthlyPayment: calculations.postInterestOnlyMonthlyPayment,
       annualDebtServiceSchedule: calculations.annualDebtServiceSchedule,
+      loanMaturityBalance: calculations.loanMaturityBalance,
     };
 
     const reportState = {
@@ -2169,6 +2760,8 @@ ${reportContent.innerHTML}
           detailParts.push(detailMessage);
         }
 
+        showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
+
         alert(
           ['Failed to save the report to your account.', ...detailParts]
             .filter(Boolean)
@@ -2183,6 +2776,11 @@ ${reportContent.innerHTML}
 
       if (warnings.length > 0) {
         console.warn('Report saved with warnings:', warnings);
+        warnings.forEach((warning) => {
+          if (typeof warning === 'string' && warning.trim()) {
+            showToast({ message: warning, tone: 'warning' });
+          }
+        });
       }
 
       const savedRow = Array.isArray(result.data) ? result.data[0] : result.data;
@@ -2195,13 +2793,7 @@ ${reportContent.innerHTML}
       }
 
       await fetchSavedReports();
-
-      if (showAlert) {
-        const message = warnings.length > 0
-          ? ['Report saved to your account.', ...warnings].join('\n\n')
-          : 'Report saved to your account.';
-        alert(message);
-      }
+      showToast({ message: '💾 Report saved to your account successfully.', tone: 'success' });
 
       return true;
     } catch (err) {
@@ -2211,6 +2803,7 @@ ${reportContent.innerHTML}
 
       console.error('Error saving report:', err);
       const message = err?.message ? `\n\n${err.message}` : '';
+      showToast({ message: '⚠️ Unable to save report to your account.', tone: 'error' });
       alert(`Failed to save the report to your account.${message}`);
       return false;
     } finally {
@@ -2238,6 +2831,8 @@ ${reportContent.innerHTML}
     expenseRatio,
     projectionYears,
     requireAuth,
+    ensurePreparedByInfo,
+    showToast,
   ]);
 
   const downloadReport = async () => {
@@ -2254,6 +2849,11 @@ ${reportContent.innerHTML}
       return;
     }
 
+    const { ok: hasPreparedInfo } = ensurePreparedByInfo();
+    if (!hasPreparedInfo) {
+      return;
+    }
+
     const htmlContent = buildReportHtml();
     if (!htmlContent) {
       alert('Unable to capture report content for download.');
@@ -2264,7 +2864,9 @@ ${reportContent.innerHTML}
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mobile-home-park-analysis-${new Date().toISOString().split('T')[0]}.html`;
+    const effectiveReportName = (reportName && reportName.trim()) || propertyInfo.name || 'Untitled Report';
+    const datePart = new Date().toISOString().split('T')[0];
+    a.download = `${slugify(effectiveReportName)}-${datePart}.html`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2272,9 +2874,96 @@ ${reportContent.innerHTML}
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
     if (authUser?.id || session?.user?.id) {
-      await saveReportToAccount({ htmlContent, showAlert: false });
+      await saveReportToAccount({ htmlContent });
     }
   };
+
+  const handleDeleteReport = useCallback(
+    async (report) => {
+      if (!report || report.id === undefined || report.id === null) {
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
+        return;
+      }
+
+      if (!isSupabaseConfigured || !supabase) {
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
+        alert('Supabase is not configured. Please add your Supabase credentials to delete saved reports.');
+        return;
+      }
+
+      const reportIdValue = report.id;
+      const reportIdString = String(reportIdValue);
+
+      const confirmed = window.confirm('Are you sure you want to delete this report? This action cannot be undone.');
+      if (!confirmed) {
+        return;
+      }
+
+      let authUser;
+      try {
+        authUser = await requireAuth();
+      } catch (err) {
+        if (err?.code === AUTH_REQUIRED_ERROR || err?.code === 'SUPABASE_NOT_CONFIGURED') {
+          return;
+        }
+
+        console.error('Error verifying authentication before deleting report:', err);
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
+        alert('Unable to verify your authentication status. Please try signing in again.');
+        return;
+      }
+
+      const ownerId = authUser?.id || session?.user?.id;
+      if (!ownerId) {
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
+        alert('Unable to confirm your account. Please sign in again and retry.');
+        return;
+      }
+
+      setDeletingReportId(reportIdString);
+
+      try {
+        const apiBase = process.env.REACT_APP_API_BASE || '';
+        const response = await fetch(`${apiBase}/api/delete-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: reportIdValue }),
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.success) {
+          console.error('Failed to delete report:', result);
+          showToast({ message: '❌ Failed to delete report.', tone: 'error' });
+          const detailMessage = result?.error || 'The report could not be deleted. Please try again.';
+          alert(detailMessage);
+          return;
+        }
+
+        if (selectedReportId === reportIdString) {
+          setSelectedReportId('');
+        }
+
+        await fetchSavedReports();
+        showToast({ message: '✅ Report deleted successfully.', tone: 'success' });
+      } catch (err) {
+        console.error('Unexpected error deleting report:', err);
+        showToast({ message: '❌ Failed to delete report.', tone: 'error' });
+        alert('Failed to delete the report. Please try again.');
+      } finally {
+        setDeletingReportId(null);
+      }
+    },
+    [
+      fetchSavedReports,
+      isSupabaseConfigured,
+      requireAuth,
+      selectedReportId,
+      session,
+      showToast,
+      supabase,
+    ]
+  );
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
@@ -2308,6 +2997,12 @@ ${reportContent.innerHTML}
                   {sessionEmail || session.user.email || session.user.id}
                 </span>
               </span>
+              <button
+                onClick={() => setProfileOpen(true)}
+                className="rounded border border-blue-500 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50"
+              >
+                My Profile
+              </button>
               <button
                 onClick={handleSignOut}
                 className="rounded border border-gray-400 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100"
@@ -2386,31 +3081,114 @@ ${reportContent.innerHTML}
         {/* Tabs */}
         <div className="border-b border-gray-200 bg-gray-50">
           <div className="flex space-x-1 p-2">
-            {[ 'rent-roll', 'pnl', 'proforma', 'returns', 'report', session?.user ? 'my-reports' : null]
+            {[
+              'rent-roll',
+              'pnl',
+              'proforma',
+              'returns',
+              'report',
+              session?.user ? 'analytics' : null,
+              session?.user ? 'my-reports' : null,
+            ]
               .filter(Boolean)
               .map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-6 py-3 rounded-t font-semibold transition-colors ${
-                  activeTab === tab
-                    ? 'bg-white text-blue-700 border-t-2 border-blue-600'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {tab === 'my-reports' && 'My Reports'}
-                {tab === 'rent-roll' && 'Rent Roll'}
-                {tab === 'pnl' && 'P&L Statement'}
-                {tab === 'proforma' && `${projectionYears}-Year Proforma`}
-                {tab === 'returns' && 'Return Metrics'}
-                {tab === 'report' && 'Report'}
-              </button>
-            ))}
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-6 py-3 rounded-t font-semibold transition-colors ${
+                    activeTab === tab
+                      ? 'bg-white text-blue-700 border-t-2 border-blue-600'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {tab === 'rent-roll' && 'Rent Roll'}
+                  {tab === 'pnl' && 'P&L Statement'}
+                  {tab === 'proforma' && `${projectionYears}-Year Proforma`}
+                  {tab === 'returns' && 'Return Metrics'}
+                  {tab === 'report' && 'Report'}
+                  {tab === 'analytics' && 'Analytics'}
+                  {tab === 'my-reports' && 'My Reports'}
+                </button>
+              ))}
           </div>
         </div>
 
         {/* Content */}
         <div className="p-6">
+          {activeTab === 'analytics' && (
+            <div className="space-y-6">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-800">Analytics</h2>
+                  <p className="text-sm text-gray-600">
+                    Aggregate metrics for all reports saved to your account.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRefreshAnalytics}
+                  disabled={loadingAnalytics}
+                  className="inline-flex items-center gap-2 rounded border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                >
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  {loadingAnalytics ? 'Refreshing…' : 'Refresh'}
+                  {loadingAnalytics && (
+                    <span className="ml-2 animate-spin text-blue-500" role="status" aria-hidden="true">
+                      ⏳
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {analyticsError ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  {analyticsError}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {loadingAnalytics && (
+                    <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                      Updating analytics…
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {analyticsCardData.map(({ id, label, value, icon: Icon, accentClass, formatValue }) => {
+                      const displayValue =
+                        value === null || value === undefined
+                          ? '—'
+                          : formatValue
+                          ? formatValue(value)
+                          : value.toLocaleString('en-US');
+
+                      return (
+                        <div
+                          key={id}
+                          className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm transition hover:shadow-md"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</p>
+                              <div className="mt-3 text-3xl font-bold text-gray-900">{displayValue}</div>
+                            </div>
+                            <div className={`rounded-full p-3 ${accentClass}`}>
+                              <Icon className="h-5 w-5" aria-hidden="true" />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {analyticsMetrics.totalReports === 0 && !loadingAnalytics && (
+                    <div className="rounded-lg border border-gray-200 bg-white p-6 text-sm text-gray-600">
+                      No reports found. Save a report to populate your analytics dashboard.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'my-reports' && (
             <div className="space-y-6">
               <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -2481,6 +3259,34 @@ ${reportContent.innerHTML}
                             <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
                               <button
                                 type="button"
+                                onClick={() => handleReportSort('state')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                State
+                                {reportSort.column === 'state' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => handleReportSort('sites')}
+                                className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
+                              >
+                                # Sites
+                                {reportSort.column === 'sites' && (
+                                  <span className="text-xs">
+                                    {reportSort.direction === 'asc' ? '▲' : '▼'}
+                                  </span>
+                                )}
+                              </button>
+                            </th>
+                            <th scope="col" className="px-4 py-3 text-left text-sm font-semibold text-gray-700">
+                              <button
+                                type="button"
                                 onClick={() => handleReportSort('price')}
                                 className="flex items-center gap-1 text-left font-semibold text-gray-700 hover:text-blue-600"
                               >
@@ -2506,6 +3312,12 @@ ${reportContent.innerHTML}
                                 )}
                               </button>
                             </th>
+                            <th
+                              scope="col"
+                              className="px-4 py-3 text-right text-sm font-semibold text-gray-700"
+                            >
+                              Actions
+                            </th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200">
@@ -2528,6 +3340,9 @@ ${reportContent.innerHTML}
                             const isLoading = loadingReportId === reportIdString;
                             const isSelected = selectedReportId && selectedReportId === reportIdString;
                             const cityValue = resolveCity(report, state) || '—';
+                            const stateValue = resolveState(report, state) || '—';
+                            const sitesValue = resolveSiteCount(report, state);
+                            const formattedSites = Number.isFinite(sitesValue) ? sitesValue : '—';
                             const rowBase = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
                             const rowState = isSelected ? 'bg-blue-50 text-blue-800' : rowBase;
                             const rowHover = isSelected ? '' : 'hover:bg-blue-50';
@@ -2548,6 +3363,51 @@ ${reportContent.innerHTML}
                                 event.preventDefault();
                                 loadReport(report);
                               }
+                            };
+
+                            const isDeleting = deletingReportId === reportIdString;
+
+                            const handleShareReport = async (event) => {
+                              event.stopPropagation();
+                              event.preventDefault();
+
+                              if (isLoading || isDeleting) {
+                                return;
+                              }
+
+                              const origin =
+                                typeof window !== 'undefined' && window.location
+                                  ? window.location.origin
+                                  : '';
+
+                              const shareUrl = origin
+                                ? `${origin}/report/${reportIdString}`
+                                : `/report/${reportIdString}`;
+
+                              const clipboard =
+                                typeof navigator !== 'undefined' ? navigator.clipboard : null;
+
+                              if (clipboard?.writeText) {
+                                try {
+                                  await clipboard.writeText(shareUrl);
+                                  showToast({
+                                    message: '🔗 Share link copied to your clipboard.',
+                                    tone: 'success',
+                                  });
+                                  return;
+                                } catch (clipboardError) {
+                                  console.warn('Unable to copy share link automatically:', clipboardError);
+                                }
+                              }
+
+                              if (typeof window !== 'undefined') {
+                                window.prompt('Copy this shareable report URL:', shareUrl);
+                              }
+
+                              showToast({
+                                message: 'ℹ️ Share URL ready to share.',
+                                tone: 'info',
+                              });
                             };
 
                             return (
@@ -2574,10 +3434,48 @@ ${reportContent.innerHTML}
                                   {cityValue || '—'}
                                 </td>
                                 <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {stateValue || '—'}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
+                                  {formattedSites}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-gray-700">
                                   {formattedPrice}
                                 </td>
                                 <td className="px-4 py-3 align-middle text-sm text-gray-700">
                                   {formattedDate}
+                                </td>
+                                <td className="px-4 py-3 align-middle text-sm text-right">
+                                  <div className="flex justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={handleShareReport}
+                                      disabled={isLoading || isDeleting}
+                                      className="inline-flex items-center gap-1 rounded border border-blue-600 px-3 py-1 text-sm font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
+                                    >
+                                      <Share2 className="h-4 w-4" aria-hidden="true" />
+                                      Share
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        event.preventDefault();
+                                        if (isLoading || isDeleting) {
+                                          return;
+                                        }
+                                        handleDeleteReport(report);
+                                      }}
+                                      disabled={isLoading || isDeleting}
+                                      className={`rounded border px-3 py-1 text-sm font-semibold transition ${
+                                        isDeleting
+                                          ? 'border-gray-300 text-gray-400 cursor-wait'
+                                          : 'border-red-500 text-red-600 hover:bg-red-50'
+                                      }`}
+                                    >
+                                      {isDeleting ? 'Deleting…' : 'Delete'}
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             );
@@ -3252,7 +4150,7 @@ ${reportContent.innerHTML}
               {/* Financing Inputs */}
               <div className="bg-gray-50 p-6 rounded-lg border border-gray-300">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">Financing Terms</h3>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Down Payment %</label>
                     <input
@@ -3278,6 +4176,20 @@ ${reportContent.innerHTML}
                       type="number"
                       value={purchaseInputs.loanTermYears}
                       onChange={(e) => setPurchaseInputs({...purchaseInputs, loanTermYears: Number(e.target.value)})}
+                      className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Amortization (Years)</label>
+                    <input
+                      type="number"
+                      value={purchaseInputs.amortizationYears}
+                      onChange={(e) =>
+                        setPurchaseInputs({
+                          ...purchaseInputs,
+                          amortizationYears: Number(e.target.value),
+                        })
+                      }
                       className="w-full p-3 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold text-lg"
                     />
                   </div>
@@ -3910,6 +4822,9 @@ ${reportContent.innerHTML}
                     onChange={(e) => setContactInfo({...contactInfo, phone: e.target.value})}
                     className="p-2 border border-gray-300 rounded bg-white text-sm w-36"
                   />
+                  <p className="text-xs text-gray-500 w-full">
+                    These details populate the Prepared By section displayed in the report and exported file.
+                  </p>
                   <div className="flex flex-col w-56">
                     <label className="text-sm font-semibold text-gray-700 mb-1">Report Name</label>
                     <input
@@ -3925,7 +4840,7 @@ ${reportContent.innerHTML}
                 <div className="flex flex-wrap items-center gap-3 justify-end">
                   {session?.user ? (
                     <button
-                      onClick={() => saveReportToAccount({ showAlert: true })}
+                      onClick={() => saveReportToAccount()}
                       className="rounded border border-blue-600 px-6 py-2 font-semibold text-blue-600 transition hover:bg-blue-50 disabled:opacity-60"
                       disabled={savingReport}
                     >
@@ -3965,6 +4880,46 @@ ${reportContent.innerHTML}
                     </p>
                   )}
                   <p className="text-gray-600 mt-3">Report Generated: {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                </div>
+
+                {/* Prepared By */}
+                <div className="mb-10">
+                  <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-300 pb-2 mb-4">Prepared By</h2>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Name</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {preparedByContact.name || '—'}
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Company</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {preparedByContact.company || '—'}
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Email</div>
+                      <div className="text-lg font-semibold text-gray-900 break-words">
+                        {preparedByContact.email ? (
+                          <a
+                            href={`mailto:${preparedByContact.email}`}
+                            style={{ color: '#1d4ed8', textDecoration: 'underline' }}
+                          >
+                            {preparedByContact.email}
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded border border-gray-200">
+                      <div className="text-sm text-gray-600 mb-1">Phone</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {preparedByContact.phone || '—'}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Executive Summary */}
@@ -4071,6 +5026,248 @@ ${reportContent.innerHTML}
                   </div>
                 </div>
 
+                {proformaSnapshotYears.length > 0 && (
+                  <div className="mb-10">
+                    <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-300 pb-2 mb-4">
+                      Five-Year Proforma Summary
+                    </h2>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead>
+                          <tr style={{ background: 'linear-gradient(90deg, #2563eb, #1d4ed8)', color: '#ffffff' }}>
+                            <th
+                              style={{
+                                padding: '1rem',
+                                textAlign: 'left',
+                                fontWeight: 700,
+                                border: '1px solid #bfdbfe',
+                              }}
+                            >
+                              Metric
+                            </th>
+                            {proformaSnapshotYears.map((year) => (
+                              <th
+                                key={year.year}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  border: '1px solid #bfdbfe',
+                                }}
+                              >
+                                Year {year.year}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr style={{ backgroundColor: '#faf5ff' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Occupied Lots
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`occupied-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {year.occupiedUnits} / {calculations.totalUnits}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#f3e8ff' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Occupancy Rate
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`occupancy-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatPercent(year.occupancyRate)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#ffffff' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Avg Monthly Rent
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`rent-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.avgMonthlyRent)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#f8fafc' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Rent Growth Applied (per lot/month)
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`growth-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 600,
+                                  color: '#374151',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {describeRentIncrease(year)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#f0fdf4' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Lot Rent Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`lot-income-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.lotRentIncome)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#dcfce7' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#1f2937', border: '1px solid #d1d5db' }}>
+                              Other Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`other-income-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.otherIncome)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#bbf7d0' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 700,
+                                color: '#14532d',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Total Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`total-income-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  color: '#15803d',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.totalIncome)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#fef2f2' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 600,
+                                color: '#b91c1c',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Operating Expenses
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`expenses-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 600,
+                                  color: '#b91c1c',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.expenses)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#dbeafe' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 700,
+                                color: '#1d4ed8',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Net Operating Income
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`noi-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  color: '#1d4ed8',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.noi)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#fff7ed' }}>
+                            <td style={{ padding: '1rem', fontWeight: 600, color: '#9a3412', border: '1px solid #d1d5db' }}>
+                              Debt Service
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`debt-${year.year}`}
+                                style={{ padding: '1rem', textAlign: 'center', fontWeight: 600, border: '1px solid #e5e7eb' }}
+                              >
+                                {formatCurrency(year.debtService)}
+                              </td>
+                            ))}
+                          </tr>
+                          <tr style={{ backgroundColor: '#fed7aa' }}>
+                            <td
+                              style={{
+                                padding: '1rem',
+                                fontWeight: 700,
+                                color: '#9a3412',
+                                border: '1px solid #d1d5db',
+                              }}
+                            >
+                              Annual Cash Flow
+                            </td>
+                            {proformaSnapshotYears.map((year) => (
+                              <td
+                                key={`cashflow-${year.year}`}
+                                style={{
+                                  padding: '1rem',
+                                  textAlign: 'center',
+                                  fontWeight: 700,
+                                  color: '#9a3412',
+                                  border: '1px solid #e5e7eb',
+                                }}
+                              >
+                                {formatCurrency(year.cashFlow)}
+                              </td>
+                            ))}
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
                 {/* Investment Analysis */}
                 <div className="mb-10">
                   <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-300 pb-2 mb-4">Investment Analysis</h2>
@@ -4112,6 +5309,14 @@ ${reportContent.innerHTML}
                         <div className="flex justify-between py-2 border-b border-gray-200">
                           <span className="text-gray-700">Loan Term:</span>
                           <span className="font-semibold">{purchaseInputs.loanTermYears} years</span>
+                        </div>
+                        <div className="flex justify-between py-2 border-b border-gray-200">
+                          <span className="text-gray-700">Amortization:</span>
+                          <span className="font-semibold">{purchaseInputs.amortizationYears} years</span>
+                        </div>
+                        <div className="flex justify-between py-2">
+                          <span className="text-gray-700">Balloon Balance at Maturity:</span>
+                          <span className="font-semibold">{formatCurrency(calculations.loanMaturityBalance)}</span>
                         </div>
                       </div>
                     </div>
@@ -4236,6 +5441,12 @@ ${reportContent.innerHTML}
           )}
         </div>
       </div>
+
+      <ProfileModal
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onProfileUpdated={handleProfileUpdated}
+      />
 
       <AuthModal
         isOpen={authModalOpen}

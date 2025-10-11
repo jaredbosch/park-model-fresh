@@ -1,10 +1,11 @@
 const { createClient } = require('@supabase/supabase-js');
-const OpenAI = require('openai');
 const { Resend } = require('resend');
+const OpenAI = require('openai');
+const { extractKeyMetrics } = require('./utils/extractKeyMetrics');
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const openaiApiKey = process.env.OPENAI_API_KEY;
+const openAIApiKey = process.env.OPENAI_API_KEY;
 const resendApiKey = process.env.RESEND_API_KEY;
 const resendFromEmail = process.env.RESEND_FROM_EMAIL || '';
 const notificationEmailList = process.env.REPORT_NOTIFICATION_EMAILS || '';
@@ -13,6 +14,8 @@ const supabase =
   supabaseUrl && supabaseServiceRoleKey
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
+
+const openaiClient = openAIApiKey ? new OpenAI({ apiKey: openAIApiKey }) : null;
 
 const sanitizeColumnName = (rawColumn) => {
   if (!rawColumn) {
@@ -191,9 +194,127 @@ const parseEmailList = (value) =>
 
 const staticNotificationEmails = parseEmailList(notificationEmailList);
 
-const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
-
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
+
+const pickFirstRecord = (records) => {
+  if (!records) {
+    return null;
+  }
+
+  if (Array.isArray(records)) {
+    return records[0] || null;
+  }
+
+  return records;
+};
+
+const buildEmbeddingSource = (payload = {}) => {
+  const propertyDetails = payload.propertyInfo || {};
+  const purchaseDetails = payload.purchaseInputs || {};
+  const calculations = payload.calculations || {};
+  const contact = payload.contactInfo || {};
+
+  return {
+    property_name: propertyDetails.name,
+    city: propertyDetails.city,
+    state: propertyDetails.state,
+    num_lots:
+      propertyDetails.totalLots ??
+      calculations.totalUnits ??
+      propertyDetails.occupiedLots ??
+      calculations.occupiedUnits,
+    lot_rent: calculations.lotRentIncome ?? propertyDetails.averageRent,
+    home_rent:
+      calculations.rentalHomeIncome ??
+      calculations.totalAdditionalIncome ??
+      calculations.otherIncome,
+    occupancy_rate:
+      propertyDetails.physicalOccupancy ??
+      calculations.physicalOccupancy ??
+      calculations.economicOccupancy,
+    total_expenses: calculations.totalOpEx,
+    noi: calculations.noi,
+    cap_rate: calculations.capRate,
+    loan_amount: purchaseDetails.loanAmount ?? calculations.loanAmount,
+    loan_interest_rate: purchaseDetails.interestRate,
+    amortization_years: purchaseDetails.amortizationYears,
+    loan_maturity_balance:
+      purchaseDetails.loanMaturityBalance ?? calculations.loanMaturityBalance,
+    prepared_by_name: contact.name,
+    prepared_by_company: contact.company,
+    prepared_by_email: contact.email,
+    prepared_by_phone: contact.phone,
+  };
+};
+
+const MAX_EMBEDDING_SOURCE_LENGTH = 4000;
+
+const maybeCreateReportEmbedding = async ({ reportRecord, payload, htmlLength }) => {
+  if (!openaiClient) {
+    console.log('⚠️  Skipping report embedding: OpenAI client is not configured.');
+    return;
+  }
+
+  if (!supabase) {
+    console.log('⚠️  Skipping report embedding: Supabase client is not configured.');
+    return;
+  }
+
+  if (!reportRecord || !reportRecord.id) {
+    console.log('⚠️  Skipping report embedding: Report identifier is missing.');
+    return;
+  }
+
+  if (typeof htmlLength === 'number' && htmlLength > 50000) {
+    console.log(
+      `⚠️  Skipping report embedding for ${reportRecord.id}: HTML length ${htmlLength} exceeds 50000 characters.`
+    );
+    return;
+  }
+
+  try {
+    const keyMetricsPayload = buildEmbeddingSource(payload);
+    const compactText = extractKeyMetrics(keyMetricsPayload);
+
+    if (!compactText) {
+      console.log(`⚠️  Skipping report embedding for ${reportRecord.id}: No compact text available.`);
+      return;
+    }
+
+    const truncatedText = compactText.slice(0, MAX_EMBEDDING_SOURCE_LENGTH);
+
+    if (!truncatedText.trim()) {
+      console.log(`⚠️  Skipping report embedding for ${reportRecord.id}: Compact text is empty after trimming.`);
+      return;
+    }
+
+    const embeddingResponse = await openaiClient.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: truncatedText,
+    });
+
+    const embedding = embeddingResponse?.data?.[0]?.embedding;
+
+    if (!Array.isArray(embedding) || embedding.length === 0) {
+      console.log(`⚠️  Skipping report embedding for ${reportRecord.id}: No embedding returned.`);
+      return;
+    }
+
+    const { error: updateError } = await supabase
+      .from('reports')
+      .update({ embedding })
+      .eq('id', reportRecord.id);
+
+    if (updateError) {
+      console.error('❌ Failed to store report embedding:', updateError);
+      return;
+    }
+
+    console.log(`✅ Report embedding saved for report ${reportRecord.id}.`);
+  } catch (error) {
+    console.error(`❌ Error generating report embedding for report ${reportRecord?.id || 'unknown'}:`, error);
+  }
+};
 
 async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -209,6 +330,39 @@ async function handler(req, res) {
       return res.status(500).json({ success: false, error: 'Supabase is not configured on the server.' });
     }
 
+    if (!payload.userId) {
+      return res.status(400).json({ success: false, error: 'User ID is required to save a report.' });
+    }
+
+    const html = payload.htmlContent || payload.html || '';
+    const name = payload.reportName || payload.name || 'Untitled Report';
+    const metadata = payload.reportState || payload.metadata || null;
+
+    if (html && html.length > 50000) {
+      const { data, error } = await supabase
+        .from('reports')
+        .insert([
+          {
+            html,
+            name,
+            metadata,
+            user_id: payload.userId,
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select();
+
+      if (error) {
+        console.error('Supabase insert error (large html):', error);
+        return res.status(500).json({ success: false, error: error.message || 'Failed to save large report.' });
+      }
+
+      const reportRecord = pickFirstRecord(data);
+      await maybeCreateReportEmbedding({ reportRecord, payload, htmlLength: html.length });
+
+      return res.status(200).json({ success: true, data });
+    }
+
     const schemaStatus = await ensureReportsSchema();
 
     if (schemaStatus.warning) {
@@ -220,25 +374,7 @@ async function handler(req, res) {
       return res.status(500).json({ success: false, error: schemaStatus.error?.message, details: schemaStatus.error });
     }
 
-    if (!payload.userId) {
-      return res.status(400).json({ success: false, error: 'User ID is required to save a report.' });
-    }
-
     const ownerEmail = payload.contactInfo?.email || authUser.email || '';
-
-    // Build embedding text
-    const textToEmbed = `${payload.propertyInfo?.name || ''}, ${payload.propertyInfo?.state || ''}\n${payload.htmlContent || ''}`;
-
-    let embedding = null;
-    if (textToEmbed.trim() && openai) {
-      const embeddingResp = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: textToEmbed,
-      });
-      embedding = embeddingResp.data[0].embedding;
-    } else if (textToEmbed.trim() && !openai) {
-      console.warn('OPENAI_API_KEY is not set. Embeddings will be skipped.');
-    }
 
     const reportState =
       payload.reportState && typeof payload.reportState === 'object'
@@ -270,11 +406,13 @@ async function handler(req, res) {
       loan_amount: payload.purchaseInputs?.loanAmount,
       interest_rate: payload.purchaseInputs?.interestRate,
       loan_term_years: payload.purchaseInputs?.loanTermYears,
+      amortization_years: payload.purchaseInputs?.amortizationYears,
       monthly_payment: payload.purchaseInputs?.monthlyPayment,
       annual_debt_service: payload.purchaseInputs?.annualDebtService,
       interest_only_period_years: payload.purchaseInputs?.interestOnlyPeriodYears,
       interest_only_payment: payload.purchaseInputs?.interestOnlyMonthlyPayment,
       amortizing_payment: payload.purchaseInputs?.postInterestOnlyMonthlyPayment,
+      loan_maturity_balance: payload.purchaseInputs?.loanMaturityBalance,
       total_lots: payload.propertyInfo?.totalLots ?? payload.calculations?.totalUnits,
       occupied_lots: payload.propertyInfo?.occupiedLots ?? payload.calculations?.occupiedUnits,
       physical_occupancy: payload.propertyInfo?.physicalOccupancy ?? payload.calculations?.physicalOccupancy,
@@ -301,7 +439,6 @@ async function handler(req, res) {
       income_items: payload.additionalIncome || [],
       expense_items: payload.expenses || [],
       additional_income: payload.additionalIncome || [],
-      embedding,
       expense_ratio: payload.expenseRatio,
       projection_years: payload.projectionYears,
     };
@@ -331,7 +468,11 @@ async function handler(req, res) {
         return query.select();
       }
 
-      return supabase.from('reports').insert([dataToPersist]).select();
+      const nowIso = new Date().toISOString();
+      return supabase
+        .from('reports')
+        .insert([{ ...dataToPersist, created_at: nowIso }])
+        .select();
     };
 
     let data;
@@ -406,6 +547,13 @@ async function handler(req, res) {
         `Saved report without unsupported columns: ${droppedColumns.sort().join(', ')}`
       );
     }
+
+    const reportRecord = pickFirstRecord(data);
+    await maybeCreateReportEmbedding({
+      reportRecord,
+      payload,
+      htmlLength: html ? html.length : null,
+    });
 
     // ✅ Send full HTML report in the email body
     if (resend) {

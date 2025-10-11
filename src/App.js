@@ -7,7 +7,9 @@ import {
 } from "react-router-dom";
 import MobileHomeParkModel from "./MobileHomeParkModel";
 import LandingPage from "./LandingPage";
-import supabase, { isSupabaseConfigured } from "./supabaseClient";
+import SharedReport from "./SharedReport";
+import { supabase, isSupabaseConfigured } from "./supabaseClient";
+import { ToastProvider } from "./components/ToastProvider";
 
 function ProtectedRoute({ children }) {
   const [session, setSession] = useState(null);
@@ -58,27 +60,32 @@ export default function App() {
   };
 
   return (
-    <Router>
-      <Routes>
-        {/* Landing page now receives Supabase client */}
-        <Route
-          path="/"
-          element={<LandingPage onTryItNow={handleTryItNow} supabase={supabase} />}
-        />
+    <ToastProvider>
+      <Router>
+        <Routes>
+          {/* Landing page now receives Supabase client */}
+          <Route
+            path="/"
+            element={<LandingPage onTryItNow={handleTryItNow} supabase={supabase} />}
+          />
 
-        {/* Auth-protected app */}
-        <Route
-          path="/app"
-          element={
-            <ProtectedRoute>
-              <MobileHomeParkModel />
-            </ProtectedRoute>
-          }
-        />
+          {/* Auth-protected app */}
+          <Route
+            path="/app"
+            element={
+              <ProtectedRoute>
+                <MobileHomeParkModel />
+              </ProtectedRoute>
+            }
+          />
 
-        {/* Catch-all redirect */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Router>
+          {/* Public shared report route */}
+          <Route path="/report/:id" element={<SharedReport />} />
+
+          {/* Catch-all redirect */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Router>
+    </ToastProvider>
   );
 }
