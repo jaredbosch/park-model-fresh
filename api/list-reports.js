@@ -21,10 +21,12 @@ const sanitizeColumnName = (rawColumn) => {
 };
 
 const columnVariants = [
-  'id, report_name, park_name, created_at, updated_at, report_state',
-  'id, report_name, park_name, created_at, report_state',
-  'id, park_name, created_at, report_state',
-  'id, park_name, created_at',
+  'id, report_name, park_name, park_city, park_state, total_lots, created_at, updated_at, report_state',
+  'id, report_name, park_name, park_city, park_state, total_lots, created_at, report_state',
+  'id, report_name, park_name, park_city, park_state, created_at, report_state',
+  'id, park_name, park_city, park_state, created_at, report_state',
+  'id, park_name, park_city, park_state, created_at',
+  'id, park_name, park_city, park_state',
   'id, park_name',
 ];
 

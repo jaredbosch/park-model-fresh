@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import supabase, { isSupabaseConfigured } from '../supabaseClient';
+import { supabase, isSupabaseConfigured } from '../supabaseClient';
 
 const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
   const [mode, setMode] = useState('sign-in');
