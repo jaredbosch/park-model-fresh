@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
+import ProfileModal from './components/ProfileModal';
 import { useToast } from './components/ToastProvider';
 
 let globalUser = null;
@@ -527,6 +528,46 @@ const MobileHomeParkModel = () => {
   }, []);
 
   const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
+  const [profileDefaults, setProfileDefaults] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  const handleProfileUpdated = useCallback((defaults) => {
+    if (!defaults || typeof defaults !== 'object') {
+      setProfileDefaults(null);
+      return;
+    }
+
+    const normalised = {
+      name: defaults.name || '',
+      company: defaults.company || '',
+      phone: defaults.phone || '',
+      email: defaults.email || '',
+    };
+
+    setProfileDefaults((previous) => {
+      setContactInfo((current) => {
+        const next = { ...current };
+        let changed = false;
+
+        ['name', 'company', 'phone', 'email'].forEach((field) => {
+          const nextValue = normalised[field] || '';
+          const prevValue = previous ? previous[field] || '' : '';
+          const currentValue = current[field] || '';
+
+          if (!currentValue || (!prevValue && nextValue) || currentValue === prevValue) {
+            if (nextValue && currentValue !== nextValue) {
+              next[field] = nextValue;
+              changed = true;
+            }
+          }
+        });
+
+        return changed ? next : current;
+      });
+
+      return normalised;
+    });
+  }, []);
 
   const sessionEmail = useMemo(
     () =>
@@ -537,6 +578,14 @@ const MobileHomeParkModel = () => {
     [session]
   );
 
+  useEffect(() => {
+    if (!session?.user) {
+      handleProfileUpdated(null);
+      setContactInfo({ ...DEFAULT_CONTACT_INFO });
+      setProfileOpen(false);
+    }
+  }, [handleProfileUpdated, session?.user]);
+
   const preparedByContact = useMemo(() => {
     const metadata = session?.user?.user_metadata || {};
 
@@ -544,6 +593,7 @@ const MobileHomeParkModel = () => {
 
     const emailCandidates = [
       contactInfo.email,
+      profileDefaults?.email,
       metadata.email,
       metadata.email_address,
       session?.user?.email,
@@ -560,7 +610,7 @@ const MobileHomeParkModel = () => {
       email: resolvedEmail,
       phone: resolveString(contactInfo.phone),
     };
-  }, [contactInfo, session, sessionEmail]);
+  }, [contactInfo, profileDefaults, session, sessionEmail]);
 
   const hasValidQuickPopulateRows = useMemo(
     () =>
@@ -978,6 +1028,82 @@ const MobileHomeParkModel = () => {
       setActiveTab('rent-roll');
     }
   }, [session?.user, activeTab]);
+
+  useEffect(() => {
+    if (!session?.user?.id || !isSupabaseConfigured || !supabase) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const ensureAndLoadProfile = async () => {
+      const userId = session.user.id;
+      const emailCandidate =
+        sessionEmail ||
+        session.user.email ||
+        session.user.user_metadata?.email ||
+        session.user.user_metadata?.email_address ||
+        '';
+
+      try {
+        await supabase
+          .from('profiles')
+          .upsert(
+            {
+              id: userId,
+              email: emailCandidate || null,
+            },
+            { onConflict: 'id' }
+          );
+      } catch (ensureError) {
+        console.warn('Unable to ensure Supabase profile exists:', ensureError);
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('name, company, phone, email')
+          .eq('id', userId)
+          .single();
+
+        if (!isMounted) {
+          return;
+        }
+
+        if (error) {
+          const code = error?.code || error?.details;
+          if (code && code !== 'PGRST116') {
+            throw error;
+          }
+
+          handleProfileUpdated({
+            name: '',
+            company: '',
+            phone: '',
+            email: emailCandidate || '',
+          });
+          return;
+        }
+
+        handleProfileUpdated({
+          name: data?.name || '',
+          company: data?.company || '',
+          phone: data?.phone || '',
+          email: data?.email || emailCandidate || '',
+        });
+      } catch (fetchError) {
+        if (isMounted) {
+          console.error('Error fetching Supabase profile:', fetchError);
+        }
+      }
+    };
+
+    ensureAndLoadProfile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [handleProfileUpdated, isSupabaseConfigured, session, session?.user?.id, sessionEmail, supabase]);
 
   useEffect(() => {
     if (activeTab !== 'analytics') {
@@ -2472,7 +2598,26 @@ ${reportContent.innerHTML}
   };
 
   const ensurePreparedByInfo = useCallback(() => {
-    const missingFields = Object.entries(preparedByContact)
+    const resolvedContact = { ...preparedByContact };
+
+    if (profileDefaults) {
+      const updates = {};
+      let changed = false;
+
+      ['name', 'company', 'email', 'phone'].forEach((field) => {
+        if (!resolvedContact[field] && profileDefaults[field]) {
+          resolvedContact[field] = profileDefaults[field];
+          updates[field] = profileDefaults[field];
+          changed = true;
+        }
+      });
+
+      if (changed) {
+        setContactInfo((current) => ({ ...current, ...updates }));
+      }
+    }
+
+    const missingFields = Object.entries(resolvedContact)
       .filter(([, value]) => !value)
       .map(([key]) => key);
 
@@ -2480,11 +2625,11 @@ ${reportContent.innerHTML}
       alert(
         'Please complete the Prepared By contact information (name, company, email, and phone) before saving the report.'
       );
-      return { ok: false, contact: preparedByContact };
+      return { ok: false, contact: resolvedContact };
     }
 
-    return { ok: true, contact: preparedByContact };
-  }, [preparedByContact]);
+    return { ok: true, contact: resolvedContact };
+  }, [preparedByContact, profileDefaults]);
 
   const saveReportToAccount = useCallback(async ({ htmlContent } = {}) => {
     if (!isSupabaseConfigured || !supabase) {
@@ -2852,6 +2997,12 @@ ${reportContent.innerHTML}
                   {sessionEmail || session.user.email || session.user.id}
                 </span>
               </span>
+              <button
+                onClick={() => setProfileOpen(true)}
+                className="rounded border border-blue-500 px-4 py-2 text-sm font-semibold text-blue-600 transition hover:bg-blue-50"
+              >
+                My Profile
+              </button>
               <button
                 onClick={handleSignOut}
                 className="rounded border border-gray-400 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100"
@@ -5290,6 +5441,12 @@ ${reportContent.innerHTML}
           )}
         </div>
       </div>
+
+      <ProfileModal
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onProfileUpdated={handleProfileUpdated}
+      />
 
       <AuthModal
         isOpen={authModalOpen}
