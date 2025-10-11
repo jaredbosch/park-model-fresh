@@ -904,10 +904,16 @@ const MobileHomeParkModel = () => {
         throw new Error(`Unexpected response: ${text.substring(0, 100)}`);
       }
 
-      const { metrics, error } = await response.json();
-      if (error) {
-        throw new Error(error);
+      const payload = await response.json();
+
+      if (payload && typeof payload === 'object' && payload.error) {
+        throw new Error(payload.error);
       }
+
+      const metrics =
+        payload && typeof payload === 'object' && payload.metrics
+          ? payload.metrics
+          : payload;
 
       console.log('✅ Loaded analytics metrics:', metrics);
       setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS, ...metrics });
