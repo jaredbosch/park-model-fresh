@@ -883,12 +883,7 @@ const MobileHomeParkModel = () => {
 
       const {
         data: { user } = {},
-        error: getUserError,
       } = await supabase.auth.getUser();
-
-      if (getUserError) {
-        console.warn('Supabase getUser error while fetching analytics:', getUserError);
-      }
 
       if (!user) {
         setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
@@ -896,16 +891,28 @@ const MobileHomeParkModel = () => {
         return;
       }
 
-      const response = await fetch(`/api/fetch-analytics?userId=${encodeURIComponent(user.id)}`);
-      const json = await response.json();
+      const response = await fetch(`/api/fetch-analytics?userId=${user.id}`);
+      const contentType = response.headers.get('content-type');
 
       if (!response.ok) {
-        throw new Error(json.error || 'Failed to load analytics.');
+        const msg = `Server responded ${response.status}`;
+        throw new Error(msg);
       }
 
-      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS, ...json.metrics });
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        throw new Error(`Unexpected response: ${text.substring(0, 100)}`);
+      }
+
+      const { metrics, error } = await response.json();
+      if (error) {
+        throw new Error(error);
+      }
+
+      console.log('✅ Loaded analytics metrics:', metrics);
+      setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS, ...metrics });
     } catch (err) {
-      console.error('Analytics fetch error:', err);
+      console.error('❌ Analytics fetch error:', err);
       setAnalyticsMetrics({ ...DEFAULT_ANALYTICS_METRICS });
       setAnalyticsError('Unable to load analytics right now. Please try again.');
     } finally {
