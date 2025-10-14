@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import { Button } from './ui/button';
+import { useToast } from './ToastProvider';
 
 const UNMAPPED_OPTION = 'Unmapped (Keep As-Is)';
 const SLOW_NOTICE_DELAY = 15000;
@@ -158,6 +159,7 @@ const PnLUpload = ({
   incomeCategories = DEFAULT_INCOME_OPTIONS,
   expenseCategories = DEFAULT_EXPENSE_OPTIONS,
 }) => {
+  const { showToast } = useToast();
   const fileInputRef = useRef(null);
   const slowTimerRef = useRef(null);
 
@@ -388,7 +390,7 @@ const PnLUpload = ({
     };
   }, [expenseRows, incomeRows]);
 
-  const handleConfirm = useCallback(() => {
+  const applyMapping = useCallback(() => {
     const payloadRows = [...incomeRows, ...expenseRows];
 
     const nextCache = { ...cacheRef.current };
@@ -436,10 +438,14 @@ const PnLUpload = ({
         lotRentTotal,
       },
     });
+  }, [expenseRows, incomeRows, onApplyMapping, stats, totals]);
 
+  const handleAcceptMapping = useCallback(() => {
+    applyMapping();
+    showToast({ message: '✅ Mapping applied successfully', tone: 'success' });
     setModalOpen(false);
     setCompletionMessage('');
-  }, [expenseRows, incomeRows, onApplyMapping, stats, totals]);
+  }, [applyMapping, setModalOpen, setCompletionMessage, showToast]);
 
   const handleExport = useCallback(() => {
     exportAsJson([...incomeRows, ...expenseRows]);
@@ -621,7 +627,7 @@ const PnLUpload = ({
               </section>
             </div>
 
-            <footer className="border-t border-slate-800 bg-slate-950/80 px-6 py-4">
+            <footer className="sticky bottom-0 border-t border-slate-800 bg-slate-950/90 px-6 py-4">
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div className="space-y-1 text-sm text-slate-200">
                   <div>
@@ -642,9 +648,14 @@ const PnLUpload = ({
                   >
                     Cancel
                   </Button>
-                  <Button onClick={handleConfirm} className="bg-blue-500 text-white hover:bg-blue-600">
-                    Apply Mapping
-                  </Button>
+                  <div className="flex items-center">
+                    <button
+                      onClick={handleAcceptMapping}
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2 rounded-lg shadow transition-colors"
+                    >
+                      Accept Mapping
+                    </button>
+                  </div>
                 </div>
               </div>
             </footer>
