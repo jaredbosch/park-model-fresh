@@ -112,7 +112,9 @@ function splitIntoChunks(text) {
 async function parseChunk(chunk) {
   ensureClient();
 
-  const prompt = `Extract rows from this P&L statement text:\n${chunk}`;
+  const prompt = `Extract rows from this P&L statement text. Return JSON that conforms to the following schema:\n${JSON.stringify(
+    JSON_SCHEMA
+  )}\n\nText:\n${chunk}`;
 
   const response = await openaiClient.responses.create({
     model: 'gpt-4.1-mini',
@@ -126,14 +128,7 @@ async function parseChunk(chunk) {
         content: prompt,
       },
     ],
-    response_format: {
-      type: 'json_schema',
-      json_schema: {
-        name: 'pnl_schema',
-        schema: JSON_SCHEMA,
-        strict: true,
-      },
-    },
+    text: { format: 'json' },
   });
 
   const message = response.output?.[0]?.content?.[0];
