@@ -30,7 +30,7 @@ const JSON_SCHEMA = {
           additionalProperties: { type: 'number' },
         },
       },
-      required: ['total_income'], // ✅ OpenAI strict validator: only declare keys present in `properties`
+      required: ['total_income'],
     },
     expense: {
       type: 'object',
@@ -46,7 +46,7 @@ const JSON_SCHEMA = {
     },
     net_income: { type: 'number' },
   },
-  required: ['income', 'expense'],
+  required: ['income', 'expense', 'net_income'],
 };
 
 const UNMAPPED_TOTAL_KEYS = new Set(['total', 'totals', 'grand total', 'net income', 'net']);
