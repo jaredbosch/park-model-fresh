@@ -121,14 +121,24 @@ async function parseChunk(chunk) {
     input: [
       {
         role: 'system',
-        content: SYSTEM,
+        content: [
+          {
+            type: 'text',
+            text: SYSTEM,
+          },
+        ],
       },
       {
         role: 'user',
-        content: prompt,
+        content: [
+          {
+            type: 'text',
+            text: prompt,
+          },
+        ],
       },
     ],
-    text: { format: 'json' },
+    text: { format: "json" },
   });
 
   const message = response.output?.[0]?.content?.[0];
@@ -140,7 +150,7 @@ async function parseChunk(chunk) {
     return JSON.parse(message.text);
   } catch (err) {
     console.error('Unable to parse OpenAI P&L JSON:', err);
-    throw new Error('Failed to parse AI response for P&L document.');
+    return null;
   }
 }
 
@@ -268,6 +278,11 @@ export default async function handler(req, res) {
     }
 
     const parsedChunks = await Promise.all(chunks.map((chunk) => parseChunk(chunk)));
+    const hasValidChunk = parsedChunks.some((result) => result && typeof result === 'object');
+    if (!hasValidChunk) {
+      throw new Error('Failed to parse AI response for P&L document.');
+    }
+
     const merged = mergeChunkResults(parsedChunks);
 
     const incomeItems = sortItemsDescending(normaliseItems(merged.income.individual_items));
