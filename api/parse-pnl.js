@@ -140,9 +140,9 @@ async function parseChunk(chunk) {
     ],
     text: {
       format: {
+        name: 'PnLExtraction',
         type: 'json_schema',
         json_schema: {
-          name: 'PnLExtraction',
           schema: JSON_SCHEMA,
         },
       },
