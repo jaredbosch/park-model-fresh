@@ -22,6 +22,13 @@ if (!supabase) {
   console.error('⚠️ Supabase client not initialized yet');
 }
 
+if (typeof window !== 'undefined' && !window.__PARK_MODEL_RUNTIME_GUARD__) {
+  window.__PARK_MODEL_RUNTIME_GUARD__ = true;
+  window.onerror = (msg, src, line, col, err) => {
+    console.error('⚡ Runtime error:', msg, 'at', src, line, col, err);
+  };
+}
+
 const isSupabaseConfigured = Boolean(supabase);
 
 let globalUser = null;
@@ -872,6 +879,17 @@ const MobileHomeParkModel = () => {
       return defaultPreview;
     }
   }, [units]);
+
+  let quickPopulatePreviewForRender = defaultPreview;
+
+  try {
+    quickPopulatePreviewForRender =
+      quickPopulatePreview && typeof quickPopulatePreview === 'object'
+        ? quickPopulatePreview
+        : defaultPreview;
+  } catch (err) {
+    console.error('❌ Render crash caught:', err);
+  }
 
   const parsedVacantTarget = useMemo(() => {
     const target = parseInt(vacantTargetLots, 10);
@@ -3272,19 +3290,24 @@ ${reportContent.innerHTML}
     ]
   );
 
-  if (!supabase) {
-    console.warn('⚠️ Supabase client not initialized yet');
+  if (!quickPopulatePreviewForRender || !supabase) {
+    console.warn('⚠️ Supabase client not initialized yet or preview not ready');
     return (
-      <div style={{ color: 'white', textAlign: 'center', marginTop: '20%' }}>
-        Connecting to database...
-      </div>
-    );
-  }
-
-  if (!quickPopulatePreview) {
-    return (
-      <div style={{ color: 'white', textAlign: 'center', marginTop: '20%' }}>
-        Loading park data...
+      <div
+        style={{
+          color: 'white',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: '100vh',
+          background: '#0a0a0a',
+          flexDirection: 'column',
+        }}
+      >
+        <p>⚙️ Loading Park Model...</p>
+        <p style={{ fontSize: '0.8rem', color: '#aaa' }}>
+          Please wait, initializing data.
+        </p>
       </div>
     );
   }
@@ -3944,25 +3967,25 @@ ${reportContent.innerHTML}
                   </div>
                 </div>
 
-                {quickPopulatePreview.totalLots > 0 && (
+                {quickPopulatePreviewForRender.totalLots > 0 && (
                   <div className="mt-4 rounded-md border border-blue-200 bg-white p-4">
                     <div className="text-sm font-semibold text-blue-900">Preview Summary</div>
                     <div className="mt-2 grid grid-cols-2 gap-3 md:grid-cols-4">
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Total Lots</div>
-                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.totalLots}</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreviewForRender.totalLots}</div>
                       </div>
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Occupied</div>
-                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.occupiedLots}</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreviewForRender.occupiedLots}</div>
                       </div>
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Average Rent</div>
-                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.averageRent || 0)}</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreviewForRender.averageRent || 0)}</div>
                       </div>
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Total Rent Income</div>
-                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.totalRentIncome || 0)}</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreviewForRender.totalRentIncome || 0)}</div>
                       </div>
                     </div>
                   </div>
