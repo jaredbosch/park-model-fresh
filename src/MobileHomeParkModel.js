@@ -14,6 +14,7 @@ import AuthModal from './components/AuthModal';
 import ProfileModal from './components/ProfileModal';
 import { useToast } from './components/ToastProvider';
 import RentRollUpload from './components/RentRollUpload';
+import PnLUpload from './components/PnLUpload';
 
 let globalUser = null;
 
@@ -685,6 +686,114 @@ const MobileHomeParkModel = () => {
     [setUnits, setSelectedUnits, showToast]
   );
 
+  const handlePnLMappingApplied = useCallback(
+    (payload) => {
+      if (!payload || typeof payload !== 'object') {
+        return;
+      }
+
+      const {
+        mappedIncome = [],
+        unmappedIncome = [],
+        mappedExpense = [],
+        unmappedExpense = [],
+        totals = null,
+        stats = null,
+        derived = {},
+      } = payload;
+
+      const normaliseAmount = (value) => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : 0;
+      };
+
+      const lotRentEntries = mappedIncome.filter(
+        (row) => row.mappedCategory === 'Lot Rent'
+      );
+
+      const lotRentTotal =
+        Number.isFinite(Number(derived?.lotRentTotal))
+          ? Number(derived.lotRentTotal)
+          : lotRentEntries.reduce((sum, row) => sum + normaliseAmount(row.amount), 0);
+
+      const otherIncomeItems = mappedIncome.filter(
+        (row) => row.mappedCategory !== 'Lot Rent'
+      );
+
+      setAdditionalIncome(
+        otherIncomeItems.map((item, index) => ({
+          id: index + 1,
+          name: item.label,
+          amount: normaliseAmount(item.amount),
+          originalLabel: item.originalLabel,
+          mappedCategory: item.mappedCategory,
+        }))
+      );
+
+      setUnmappedIncomeItems(
+        unmappedIncome.map((item, index) => ({
+          id: `unmapped-income-${index}`,
+          name: item.label,
+          amount: normaliseAmount(item.amount),
+          originalLabel: item.originalLabel,
+          mappedCategory: item.mappedCategory,
+        }))
+      );
+
+      setExpenses(
+        mappedExpense.map((item, index) => ({
+          id: index + 1,
+          name: item.label,
+          amount: normaliseAmount(item.amount),
+          originalLabel: item.originalLabel,
+          mappedCategory: item.mappedCategory,
+        }))
+      );
+
+      setUnmappedExpenseItems(
+        unmappedExpense.map((item, index) => ({
+          id: `unmapped-expense-${index}`,
+          name: item.label,
+          amount: normaliseAmount(item.amount),
+          originalLabel: item.originalLabel,
+          mappedCategory: item.mappedCategory,
+        }))
+      );
+
+      if (lotRentTotal > 0) {
+        setUseActualIncome(true);
+        setActualIncome(Math.round(lotRentTotal));
+      }
+
+      const nextTotals =
+        totals && typeof totals === 'object'
+          ? {
+              ...totals,
+              lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)),
+            }
+          : { lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)) };
+
+      setPnlTotals(nextTotals);
+      setPnlMappingStats(stats || null);
+
+      showToast({
+        message: '✅ P&L Imported and Mapped Successfully',
+        tone: 'success',
+      });
+    },
+    [
+      setAdditionalIncome,
+      setExpenses,
+      setUnmappedExpenseItems,
+      setUnmappedIncomeItems,
+      setUseActualIncome,
+      setActualIncome,
+      setPnlTotals,
+      setPnlMappingStats,
+      showToast,
+    ]
+  );
+
   const quickPopulatePreview = useMemo(() => {
     if (!Array.isArray(units) || units.length === 0) {
       return {
@@ -748,6 +857,7 @@ const MobileHomeParkModel = () => {
     { id: 2, name: 'Rental Home Income', amount: 12000 },
     { id: 3, name: 'Late Fees', amount: 1200 },
   ]);
+  const [unmappedIncomeItems, setUnmappedIncomeItems] = useState([]);
   const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
     INCOME_CATEGORY_OPTIONS[0]
   );
@@ -757,12 +867,16 @@ const MobileHomeParkModel = () => {
 
   // Operating Expense Inputs
   const [expenses, setExpenses] = useState(() => createDefaultExpenses());
+  const [unmappedExpenseItems, setUnmappedExpenseItems] = useState([]);
   const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
     EXPENSE_CATEGORY_OPTIONS[0]
   );
 
   const [managementPercent, setManagementPercent] = useState(5);
   const [expenseRatio, setExpenseRatio] = useState(0);
+
+  const [pnlTotals, setPnlTotals] = useState(null);
+  const [pnlMappingStats, setPnlMappingStats] = useState(null);
 
   // Purchase & Financing Inputs
   const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
@@ -1379,6 +1493,12 @@ const MobileHomeParkModel = () => {
         }
       }
 
+      if (Array.isArray(savedState?.unmappedIncomeItems)) {
+        setUnmappedIncomeItems(savedState.unmappedIncomeItems);
+      } else {
+        setUnmappedIncomeItems([]);
+      }
+
       let nextExpenses = null;
       if (Array.isArray(savedState?.expenses)) {
         nextExpenses = savedState.expenses;
@@ -1393,6 +1513,12 @@ const MobileHomeParkModel = () => {
         setExpenses(nextExpenses);
       } else {
         setExpenses(createDefaultExpenses());
+      }
+
+      if (Array.isArray(savedState?.unmappedExpenseItems)) {
+        setUnmappedExpenseItems(savedState.unmappedExpenseItems);
+      } else {
+        setUnmappedExpenseItems([]);
       }
 
       if (typeof savedState?.managementPercent === 'number') {
@@ -1435,6 +1561,18 @@ const MobileHomeParkModel = () => {
 
       if (savedState?.proformaInputs) {
         setProformaInputs(normaliseProformaInputs(savedState.proformaInputs));
+      }
+
+      if (savedState?.pnlTotals) {
+        setPnlTotals(savedState.pnlTotals);
+      } else {
+        setPnlTotals(null);
+      }
+
+      if (savedState?.pnlMappingStats) {
+        setPnlMappingStats(savedState.pnlMappingStats);
+      } else {
+        setPnlMappingStats(null);
       }
 
       if (typeof savedState?.projectionYears === 'number') {
@@ -1878,15 +2016,23 @@ const MobileHomeParkModel = () => {
   }, []);
 
   const clearIncomeItems = useCallback(() => {
-    setAdditionalIncome((prev) => {
-      if (prev.length === 0) {
-        return prev;
-      }
+    const hasMapped = additionalIncome.length > 0;
+    const hasUnmapped = unmappedIncomeItems.length > 0;
 
-      const confirmed = window.confirm('Clear all income line items?');
-      return confirmed ? [] : prev;
-    });
-  }, []);
+    if (!hasMapped && !hasUnmapped) {
+      return;
+    }
+
+    const confirmed = window.confirm('Clear all income line items?');
+    if (!confirmed) {
+      return;
+    }
+
+    setAdditionalIncome([]);
+    setUnmappedIncomeItems([]);
+    setPnlTotals(null);
+    setPnlMappingStats(null);
+  }, [additionalIncome.length, unmappedIncomeItems.length]);
 
   // Expense Functions
   const addExpenseItem = useCallback(() => {
@@ -1929,15 +2075,21 @@ const MobileHomeParkModel = () => {
   }, []);
 
   const clearExpenseItems = useCallback(() => {
-    setExpenses((prev) => {
-      if (prev.length === 0) {
-        return prev;
-      }
+    const hasMapped = expenses.length > 0;
+    const hasUnmapped = unmappedExpenseItems.length > 0;
 
-      const confirmed = window.confirm('Clear all expense line items?');
-      return confirmed ? [] : prev;
-    });
-  }, []);
+    if (!hasMapped && !hasUnmapped) {
+      return;
+    }
+
+    const confirmed = window.confirm('Clear all expense line items?');
+    if (!confirmed) {
+      return;
+    }
+
+    setExpenses([]);
+    setUnmappedExpenseItems([]);
+  }, [expenses.length, unmappedExpenseItems.length]);
 
   // Calculations
   const calculations = useMemo(() => {
@@ -1953,10 +2105,15 @@ const MobileHomeParkModel = () => {
     const lotRentIncome = useActualIncome ? Number(actualIncome) : rentRollIncome;
 
     // Additional Income
-    const totalAdditionalIncome = additionalIncome.reduce(
+    const totalUnmappedIncome = unmappedIncomeItems.reduce(
       (sum, item) => sum + Number(item.amount),
       0
     );
+    const mappedAdditionalIncomeTotal = additionalIncome.reduce(
+      (sum, item) => sum + Number(item.amount),
+      0
+    );
+    const totalAdditionalIncome = mappedAdditionalIncomeTotal + totalUnmappedIncome;
 
     // Total Income
     const effectiveGrossIncome = lotRentIncome + totalAdditionalIncome;
@@ -1965,7 +2122,14 @@ const MobileHomeParkModel = () => {
 
     // Operating Expenses
     const managementFee = effectiveGrossIncome * (managementPercent / 100);
-    const detailedExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
+    const totalUnmappedExpenses = unmappedExpenseItems.reduce(
+      (sum, item) => sum + Number(item.amount),
+      0
+    );
+    const detailedExpenses =
+      expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) +
+      managementFee +
+      totalUnmappedExpenses;
     const ratioValue = Number(expenseRatio);
     const expenseRatioPercent = Number.isFinite(ratioValue) ? Math.max(ratioValue, 0) : 0;
     const useExpenseRatioOverride = expenseRatioPercent > 0;
@@ -2366,12 +2530,15 @@ const MobileHomeParkModel = () => {
       rentRollIncome,
       lotRentIncome,
       totalAdditionalIncome,
+      mappedAdditionalIncomeTotal,
+      totalUnmappedIncome,
       effectiveGrossIncome,
       vacancyLoss,
       economicOccupancy,
       managementFee,
       totalExpenses,
       totalOpEx,
+      totalUnmappedExpenses,
       noi,
       capRate,
       totalInvestment,
@@ -2403,9 +2570,11 @@ const MobileHomeParkModel = () => {
   }, [
     units,
     additionalIncome,
+    unmappedIncomeItems,
     useActualIncome,
     actualIncome,
     expenses,
+    unmappedExpenseItems,
     managementPercent,
     purchaseInputs,
     irrInputs,
@@ -2794,7 +2963,9 @@ ${reportContent.innerHTML}
       propertyInfo,
       contactInfo: effectiveContactInfo,
       additionalIncome,
+      unmappedIncomeItems,
       expenses,
+      unmappedExpenseItems,
       managementPercent,
       purchaseInputs,
       irrInputs,
@@ -2806,6 +2977,8 @@ ${reportContent.innerHTML}
       reportName: effectiveReportName,
       activeTab,
       calculations,
+      pnlTotals,
+      pnlMappingStats,
       ownerUserId: authUser?.id || session?.user?.id || null,
       ownerEmail: sessionEmail || authUser?.email || null,
     };
@@ -2828,7 +3001,9 @@ ${reportContent.innerHTML}
           calculations,
           units,
           additionalIncome,
+          unmappedIncomeItems,
           expenses,
+          unmappedExpenseItems,
           managementPercent,
           irrInputs,
           proformaInputs,
@@ -2836,6 +3011,8 @@ ${reportContent.innerHTML}
           actualIncome,
           expenseRatio,
           projectionYears,
+          pnlTotals,
+          pnlMappingStats,
           htmlContent: finalHtml,
           userId: authUser?.id,
           reportId: normalizedReportId,
@@ -3956,6 +4133,51 @@ ${reportContent.innerHTML}
             <div className="space-y-6">
               <h2 className="text-2xl font-bold text-gray-800">Profit & Loss Statement</h2>
 
+              <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4 shadow-sm">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-indigo-900">Upload &amp; Map P&amp;L</h3>
+                    <p className="text-sm text-indigo-700">
+                      Import a PDF or CSV profit &amp; loss statement to auto-map income and expense line items.
+                    </p>
+                  </div>
+                  <PnLUpload
+                    onApplyMapping={handlePnLMappingApplied}
+                    incomeCategories={INCOME_CATEGORY_OPTIONS}
+                    expenseCategories={EXPENSE_CATEGORY_OPTIONS}
+                  />
+                </div>
+
+                {(pnlMappingStats || pnlTotals) && (
+                  <div className="mt-4 rounded-lg border border-indigo-200 bg-white/80 p-4 text-sm text-indigo-900">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      {pnlMappingStats ? (
+                        <div className="font-semibold text-indigo-900">
+                          {pnlMappingStats.totalMapped} mapped / {pnlMappingStats.totalRows}{' '}
+                          line items • {pnlMappingStats.coverage}% coverage
+                        </div>
+                      ) : (
+                        <div className="font-semibold text-indigo-900">P&amp;L ready for review</div>
+                      )}
+                      {pnlTotals && (
+                        <div className="flex flex-wrap gap-3 text-xs sm:text-sm">
+                          <span>
+                            Total Income {formatCurrency(pnlTotals.totalIncome ?? 0)}
+                          </span>
+                          <span>
+                            Total Expenses {formatCurrency(pnlTotals.totalExpenses ?? 0)}
+                          </span>
+                          <span>Net {formatCurrency(pnlTotals.netIncome ?? 0)}</span>
+                          {Number.isFinite(Number(pnlTotals.lotRentAnnual)) && (
+                            <span>Lot Rent {formatCurrency(pnlTotals.lotRentAnnual)}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="space-y-6">
                 {/* Income Section */}
                 <div className="bg-green-50 p-6 rounded-lg border border-green-200">
@@ -4065,8 +4287,29 @@ ${reportContent.innerHTML}
                             </button>
                           </div>
                         ))}
+                        {unmappedIncomeItems.length > 0 && (
+                          <details className="rounded border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
+                            <summary className="cursor-pointer font-semibold">
+                              Other Income (Unmapped) — {formatCurrency(calculations.totalUnmappedIncome)}
+                            </summary>
+                            <div className="mt-2 space-y-1 text-xs text-yellow-800">
+                              {unmappedIncomeItems.map((item) => (
+                                <div key={item.id} className="flex items-center justify-between gap-3">
+                                  <span className="font-medium">{item.name || item.originalLabel || 'Unlabeled Income'}</span>
+                                  <span className="font-semibold">{formatCurrency(item.amount)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                        {calculations.totalUnmappedIncome > 0 && (
+                          <div className="flex justify-between text-xs text-yellow-700">
+                            <span>Mapped Other Income</span>
+                            <span className="font-semibold text-yellow-900">{formatCurrency(calculations.mappedAdditionalIncomeTotal)}</span>
+                          </div>
+                        )}
                         <div className="flex justify-between pt-2 border-t border-gray-200">
-                          <span className="text-gray-700 font-semibold">Total Other Income</span>
+                          <span className="text-gray-700 font-semibold">Total Other Income (incl. unmapped)</span>
                           <span className="font-bold text-green-700">{formatCurrency(calculations.totalAdditionalIncome)}</span>
                         </div>
                       </div>
@@ -4168,6 +4411,21 @@ ${reportContent.innerHTML}
                         </div>
                       );
                     })}
+                    {unmappedExpenseItems.length > 0 && (
+                      <details className="rounded border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-900">
+                        <summary className="cursor-pointer font-semibold">
+                          Other Expenses (Unmapped) — {formatCurrency(calculations.totalUnmappedExpenses)}
+                        </summary>
+                        <div className="mt-2 space-y-1 text-xs text-orange-800">
+                          {unmappedExpenseItems.map((item) => (
+                            <div key={item.id} className="flex items-center justify-between gap-3">
+                              <span className="font-medium">{item.name || item.originalLabel || 'Unlabeled Expense'}</span>
+                              <span className="font-semibold">{formatCurrency(item.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                     <div className="space-y-1">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center space-x-2">
