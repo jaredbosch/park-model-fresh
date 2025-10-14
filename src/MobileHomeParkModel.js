@@ -816,22 +816,17 @@ const MobileHomeParkModel = () => {
     ]
   );
 
-  let quickPopulatePreview = {
+  const defaultPreview = {
     totalLots: 0,
     occupiedLots: 0,
     averageRent: 0,
     totalRentIncome: 0,
   };
 
-  try {
-    quickPopulatePreview = useMemo(() => {
+  const quickPopulatePreview = useMemo(() => {
+    try {
       if (!Array.isArray(units) || units.length === 0) {
-        return {
-          totalLots: 0,
-          occupiedLots: 0,
-          averageRent: 0,
-          totalRentIncome: 0,
-        };
+        return defaultPreview;
       }
 
       let occupiedLots = 0;
@@ -872,11 +867,11 @@ const MobileHomeParkModel = () => {
         averageRent,
         totalRentIncome: occupiedRentSum,
       };
-    }, [units]);
-  } catch (err) {
-    console.error('❌ useMemo initialization error:', err);
-    quickPopulatePreview = null;
-  }
+    } catch (err) {
+      console.error('❌ Error computing quickPopulatePreview:', err);
+      return defaultPreview;
+    }
+  }, [units]);
 
   const parsedVacantTarget = useMemo(() => {
     const target = parseInt(vacantTargetLots, 10);
