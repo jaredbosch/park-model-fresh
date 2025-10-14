@@ -13,6 +13,7 @@ import { supabase, isSupabaseConfigured } from './supabaseClient';
 import AuthModal from './components/AuthModal';
 import ProfileModal from './components/ProfileModal';
 import { useToast } from './components/ToastProvider';
+import RentRollUpload from './components/RentRollUpload';
 
 let globalUser = null;
 
@@ -637,6 +638,52 @@ const MobileHomeParkModel = () => {
   });
 
   const [selectedUnits, setSelectedUnits] = useState([]);
+
+  const handleRentRollImport = useCallback(
+    (rows) => {
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return;
+      }
+
+      setUnits(() =>
+        rows.map((row, index) => {
+          const rawLotNumber = row?.lotNumber;
+          const lotNumber =
+            rawLotNumber !== undefined && rawLotNumber !== null && `${rawLotNumber}`.trim()
+              ? `${rawLotNumber}`.trim()
+              : `${index + 1}`;
+
+          const occupied = (() => {
+            if (typeof row?.occupied === 'string') {
+              return /^(true|yes|y|1|occupied)$/i.test(row.occupied.trim());
+            }
+            return Boolean(row?.occupied);
+          })();
+
+          const numericRent = Number(row?.rent);
+          const rent = Number.isFinite(numericRent) ? numericRent : 0;
+
+          const tenantName =
+            typeof row?.tenantName === 'string' && row.tenantName.trim()
+              ? row.tenantName.trim()
+              : occupied
+              ? 'Occupied'
+              : 'Vacant';
+
+          return {
+            id: index + 1,
+            lotNumber,
+            tenant: tenantName,
+            rent,
+            occupied,
+          };
+        })
+      );
+      setSelectedUnits([]);
+      showToast({ message: '📥 Rent roll imported successfully.', tone: 'success' });
+    },
+    [setUnits, setSelectedUnits, showToast]
+  );
 
   const quickPopulatePreview = useMemo(() => {
     if (!Array.isArray(units) || units.length === 0) {
@@ -3699,6 +3746,7 @@ ${reportContent.innerHTML}
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <h2 className="text-2xl font-bold text-gray-800">Rent Roll</h2>
                 <div className="flex flex-wrap items-center gap-4">
+                  <RentRollUpload onDataParsed={handleRentRollImport} />
                   <div className="flex items-end gap-2">
                     <div>
                       <label className="text-xs font-semibold text-gray-700">Add Multiple Lots</label>
