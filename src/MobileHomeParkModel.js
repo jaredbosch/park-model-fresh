@@ -402,7 +402,10 @@ const generateUniqueLabel = (baseLabel, existingLabels = []) => {
   return candidate;
 };
 const MobileHomeParkModel = () => {
+  console.log('✅ MobileHomeParkModel initialized');
+
   const { showToast } = useToast();
+
   const [session, setSession] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [savedReports, setSavedReports] = useState([]);
@@ -426,10 +429,73 @@ const MobileHomeParkModel = () => {
       occupancyStatus: 'occupied',
     },
   ]);
-  const quickPopulateIdRef = useRef(2);
   const [vacantTargetLots, setVacantTargetLots] = useState('');
-
   const [activeTab, setActiveTab] = useState('rent-roll');
+  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
+  const [profileDefaults, setProfileDefaults] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [units, setUnits] = useState(() => {
+    const buildDefaultUnits = () => {
+      const initialUnits = [];
+      for (let i = 1; i <= 65; i += 1) {
+        initialUnits.push({
+          id: i,
+          lotNumber: i.toString(),
+          tenant: i <= 50 ? 'Occupied' : 'Vacant',
+          rent: 450,
+          occupied: i <= 50,
+        });
+      }
+      return initialUnits;
+    };
+
+    if (typeof window === 'undefined') {
+      return buildDefaultUnits();
+    }
+
+    const stored = localStorage.getItem('rentRollUnits');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch (error) {
+        console.warn('Failed to parse stored rent roll units:', error);
+      }
+    }
+
+    return buildDefaultUnits();
+  });
+  const [selectedUnits, setSelectedUnits] = useState([]);
+  const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
+  const [savingReport, setSavingReport] = useState(false);
+  const [additionalIncome, setAdditionalIncome] = useState([
+    { id: 1, name: 'Utility Income', amount: 3600 },
+    { id: 2, name: 'Rental Home Income', amount: 12000 },
+    { id: 3, name: 'Late Fees', amount: 1200 },
+  ]);
+  const [unmappedIncomeItems, setUnmappedIncomeItems] = useState([]);
+  const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
+    INCOME_CATEGORY_OPTIONS[0]
+  );
+  const [useActualIncome, setUseActualIncome] = useState(false);
+  const [actualIncome, setActualIncome] = useState(0);
+  const [expenses, setExpenses] = useState(() => createDefaultExpenses());
+  const [unmappedExpenseItems, setUnmappedExpenseItems] = useState([]);
+  const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
+    EXPENSE_CATEGORY_OPTIONS[0]
+  );
+  const [managementPercent, setManagementPercent] = useState(5);
+  const [expenseRatio, setExpenseRatio] = useState(0);
+  const [pnlTotals, setPnlTotals] = useState(null);
+  const [pnlMappingStats, setPnlMappingStats] = useState(null);
+  const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
+  const [irrInputs, setIrrInputs] = useState(() => ({ ...DEFAULT_IRR_INPUTS }));
+  const [proformaInputs, setProformaInputs] = useState(() => normaliseProformaInputs());
+  const [projectionYears, setProjectionYears] = useState(5);
+
+  const quickPopulateIdRef = useRef(2);
 
   const formatReportDate = useCallback((value) => {
     if (!value) {
@@ -550,10 +616,6 @@ const MobileHomeParkModel = () => {
     });
   }, []);
 
-  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
-  const [profileDefaults, setProfileDefaults] = useState(null);
-  const [profileOpen, setProfileOpen] = useState(false);
-
   const handleProfileUpdated = useCallback((defaults) => {
     if (!defaults || typeof defaults !== 'object') {
       setProfileDefaults(null);
@@ -643,24 +705,6 @@ const MobileHomeParkModel = () => {
       }),
     [quickPopulateRows]
   );
-
-  // Rent Roll Inputs
-  const [units, setUnits] = useState(() => {
-    const initialUnits = [];
-    for (let i = 1; i <= 65; i++) {
-      initialUnits.push({
-        id: i,
-        lotNumber: i.toString(),
-        tenant: i <= 50 ? 'Occupied' : 'Vacant',
-        rent: 450,
-        occupied: i <= 50
-      });
-    }
-    return initialUnits;
-  });
-
-  const [selectedUnits, setSelectedUnits] = useState([]);
-
   const handleRentRollImport = useCallback(
     (rows) => {
       if (!Array.isArray(rows) || rows.length === 0) {
@@ -898,46 +942,6 @@ const MobileHomeParkModel = () => {
   const canVacantRemaining = parsedVacantTarget !== null && parsedVacantTarget > units.length;
 
   // Property Information
-  const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
-  const [savingReport, setSavingReport] = useState(false);
-  
-  // Additional Income Inputs
-  const [additionalIncome, setAdditionalIncome] = useState([
-    { id: 1, name: 'Utility Income', amount: 3600 },
-    { id: 2, name: 'Rental Home Income', amount: 12000 },
-    { id: 3, name: 'Late Fees', amount: 1200 },
-  ]);
-  const [unmappedIncomeItems, setUnmappedIncomeItems] = useState([]);
-  const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
-    INCOME_CATEGORY_OPTIONS[0]
-  );
-
-  const [useActualIncome, setUseActualIncome] = useState(false);
-  const [actualIncome, setActualIncome] = useState(0);
-
-  // Operating Expense Inputs
-  const [expenses, setExpenses] = useState(() => createDefaultExpenses());
-  const [unmappedExpenseItems, setUnmappedExpenseItems] = useState([]);
-  const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
-    EXPENSE_CATEGORY_OPTIONS[0]
-  );
-
-  const [managementPercent, setManagementPercent] = useState(5);
-  const [expenseRatio, setExpenseRatio] = useState(0);
-
-  const [pnlTotals, setPnlTotals] = useState(null);
-  const [pnlMappingStats, setPnlMappingStats] = useState(null);
-
-  // Purchase & Financing Inputs
-  const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
-
-  // IRR Inputs
-  const [irrInputs, setIrrInputs] = useState(() => ({ ...DEFAULT_IRR_INPUTS }));
-
-  // Proforma Inputs
-  const [proformaInputs, setProformaInputs] = useState(() => normaliseProformaInputs());
-  const [projectionYears, setProjectionYears] = useState(5);
-
   const fetchSavedReports = useCallback(
     async ({ sessionOverride, accessToken, userId } = {}) => {
       if (!isSupabaseConfigured || !supabase) {
