@@ -69,45 +69,85 @@ function normalizeLot(lotRaw) {
 
 function validateRows(rows) {
   const warnings = [];
+  const duplicateLots = new Set();
+  const missingRentLots = new Set();
+  let missingRentRowCount = 0;
 
   const seen = new Map();
-  const duplicates = new Set();
   rows.forEach((row) => {
     const key = row.lotNumber;
     seen.set(key, (seen.get(key) || 0) + 1);
     if (seen.get(key) > 1) {
-      duplicates.add(key);
+      duplicateLots.add(key);
+    }
+
+    if (row.occupied && (row.rent === null || row.rent === undefined)) {
+      missingRentLots.add(key);
+      missingRentRowCount += 1;
     }
   });
 
-  if (duplicates.size > 0) {
-    warnings.push(`Duplicate lot numbers detected: ${Array.from(duplicates).join(', ')}`);
+  if (duplicateLots.size > 0) {
+    warnings.push({
+      code: 'duplicate_lots',
+      message: `Duplicate lot numbers detected: ${Array.from(duplicateLots).join(', ')}`,
+      severity: 'warning',
+    });
   }
 
-  const missingRent = rows.filter((row) => row.occupied && (row.rent === null || row.rent === undefined));
-  if (missingRent.length > 0) {
-    warnings.push(
-      `${missingRent.length} occupied row(s) lack rent. Check RC/Base Rent/Space Rent columns in the source.`
-    );
+  if (missingRentRowCount > 0) {
+    warnings.push({
+      code: 'missing_rent',
+      message: `${missingRentRowCount} occupied row(s) lack rent. Check RC/Base Rent/Space Rent columns in the source.`,
+      severity: 'warning',
+    });
   }
 
   const numericLots = rows
     .map((row) => row.lotNumeric)
     .filter((value) => Number.isFinite(value))
     .sort((a, b) => a - b);
+
+  let includeSequenceWarning = false;
+
   if (numericLots.length >= 3) {
-    let gaps = 0;
-    for (let index = 1; index < numericLots.length; index += 1) {
-      if (numericLots[index] - numericLots[index - 1] > 1) {
-        gaps += 1;
+    const totalLots = rows.length;
+    const uniqueLots = Array.from(new Set(numericLots));
+    const minLot = uniqueLots[0];
+    const maxLot = uniqueLots[uniqueLots.length - 1];
+    const expectedRange = maxLot - minLot + 1;
+    let missingCount = 0;
+    let largeGapDetected = false;
+
+    for (let index = 1; index < uniqueLots.length; index += 1) {
+      const gap = uniqueLots[index] - uniqueLots[index - 1];
+      if (gap > 1) {
+        missingCount += gap - 1;
+      }
+      if (gap > 10) {
+        largeGapDetected = true;
       }
     }
-    if (gaps > 0) {
-      warnings.push('Non-sequential lot numbers detected. This may be normal, but review for missing rows.');
+
+    const missingRatio = expectedRange > 0 ? missingCount / expectedRange : 0;
+    if ((missingRatio > 0.2 || largeGapDetected) && totalLots >= 200) {
+      includeSequenceWarning = true;
     }
   }
 
-  return warnings;
+  if (includeSequenceWarning) {
+    warnings.push({
+      code: 'non_sequential',
+      message: 'Non-sequential lot numbers detected. This may be normal, but review for missing rows.',
+      severity: 'info',
+    });
+  }
+
+  return {
+    warnings,
+    duplicateLots,
+    missingRentLots,
+  };
 }
 
 function computeSummaryStats(rows = [], warnings = []) {
@@ -121,6 +161,12 @@ function computeSummaryStats(rows = [], warnings = []) {
   const averageRent = rents.length
     ? Math.round(rents.reduce((sum, rent) => sum + rent, 0) / rents.length)
     : null;
+
+  const monthlyIncome = rents.reduce((sum, rent) => sum + rent, 0);
+  const totalAnnualIncome = Math.round(monthlyIncome * 12);
+  const vacantLots = totalLots - occupiedLots;
+  const vacancyRate = totalLots > 0 ? Number(((vacantLots / totalLots) * 100).toFixed(1)) : 0;
+  const occupancyRate = totalLots > 0 ? Number(((occupiedLots / totalLots) * 100).toFixed(1)) : 0;
 
   const rentFrequency = new Map();
   rents.forEach((rent) => {
@@ -141,6 +187,9 @@ function computeSummaryStats(rows = [], warnings = []) {
     occupiedLots,
     averageRent,
     modeRent,
+    totalAnnualIncome,
+    vacancyRate,
+    occupancyRate,
     warnings,
   };
 }
@@ -303,16 +352,25 @@ export default async function handler(req, res) {
       })
       .filter(Boolean);
 
-    const warnings = validateRows(rows);
+    const validation = validateRows(rows);
+    const decoratedRows = rows.map((row) => ({
+      ...row,
+      isDuplicate: validation.duplicateLots.has(row.lotNumber),
+      missingRent: validation.missingRentLots.has(row.lotNumber) && row.occupied,
+    }));
+
+    const warnings = [...validation.warnings];
     if (rentMatchesTotal.size > 0) {
-      warnings.push(
-        `Base rent not extracted for lots ${Array.from(rentMatchesTotal).join(', ')} because the value matched a "Total" amount. Please confirm manually.`
-      );
+      warnings.push({
+        code: 'matched_total',
+        message: `Base rent not extracted for lots ${Array.from(rentMatchesTotal).join(', ')} because the value matched a "Total" amount. Please confirm manually.`,
+        severity: 'warning',
+      });
     }
 
-    const summary = computeSummaryStats(rows, warnings);
+    const summary = computeSummaryStats(decoratedRows, warnings);
 
-    return res.status(200).json({ success: true, data: rows, summary });
+    return res.status(200).json({ success: true, data: decoratedRows, summary });
   } catch (error) {
     console.error('Error parsing rent roll:', error);
     return res.status(500).json({ success: false, error: error.message || 'Unknown error' });
