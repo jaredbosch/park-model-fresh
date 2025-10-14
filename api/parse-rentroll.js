@@ -107,20 +107,20 @@ export default async function handler(req, res) {
       text = buffer.toString('utf-8');
     }
 
-    if (!text || text.length < 100) {
+    if (!text || text.length < 200) {
       const base64Image = `data:application/pdf;base64,${file}`;
       const ocrResponse = await openaiClient.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
           {
             role: 'system',
-            content: 'You are an OCR assistant for rent roll documents. Extract the visible text accurately.',
+            content: 'You are an OCR assistant for rent roll documents. Extract all visible text clearly.',
           },
           {
             role: 'user',
             content: [
-              { type: 'text', text: 'Extract all visible text from this rent roll document:' },
-              { type: 'image_url', image_url: { url: base64Image } },
+              { type: 'text', text: 'Extract text from this rent roll PDF:' },
+              { type: 'image_url', image_url: `data:application/pdf;base64,${file}` },
             ],
           },
         ],
@@ -132,48 +132,65 @@ export default async function handler(req, res) {
       throw new Error('No text could be extracted from the provided file.');
     }
 
-    const prompt = `
+    const chunks = [];
+    for (let i = 0; i < text.length; i += 10000) {
+      chunks.push(text.slice(i, i + 10000));
+    }
+
+    const nonEmptyChunks = chunks.filter((chunk) => chunk.trim().length > 0);
+    if (nonEmptyChunks.length === 0) {
+      nonEmptyChunks.push(text);
+    }
+
+    const parseChunk = async (chunk) => {
+      const prompt = `
 You are a document parser for mobile home park rent rolls.
-Return a JSON object with a top-level property 'rows' that contains an array of lot entries in this format:
-{
-  "rows": [
-    { "lotNumber": number | string, "tenantName": string | null, "occupied": boolean, "rent": number }
-  ]
-}
-If no tenant name, use null. If rent missing, use 0.
-Be lenient to messy data and extract all rows possible.
+Extract only the base lot rent for each lot (exclude utilities such as water, trash, sewer, insurance, pet fees, or other charges).
+Return a JSON array in this format:
+[
+  { "lotNumber": number | string, "tenantName": string | null, "occupied": boolean, "rent": number }
+]
+Rules:
+- "rent" must represent the lot/base rent only. Ignore or subtract bundled utilities or other fees when possible.
+- Ignore totals, headers, or summary rows.
+- Treat missing tenant names as null.
+- If only one numeric rent-like value is present, use it as the lot rent.
+- Include every identifiable lot entry even across multiple pages.
 
 Text:
-${text.slice(0, 8000)}
+${chunk}
 `;
 
-    const parseResponse = await openaiClient.chat.completions.create({
-      model: 'gpt-4o-mini',
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'user', content: prompt }],
-    });
+      const response = await openaiClient.chat.completions.create({
+        model: 'gpt-4o-mini',
+        response_format: { type: 'json_object' },
+        messages: [{ role: 'user', content: prompt }],
+      });
 
-    const content = parseResponse.choices?.[0]?.message?.content;
+      const content = response.choices?.[0]?.message?.content;
+      if (!content) {
+        return [];
+      }
 
-    if (!content) {
-      throw new Error('OpenAI returned an empty response while parsing the rent roll.');
-    }
+      try {
+        const parsed = JSON.parse(content);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+        if (Array.isArray(parsed?.rows)) {
+          return parsed.rows;
+        }
+        if (Array.isArray(parsed?.data)) {
+          return parsed.data;
+        }
+        return [];
+      } catch (error) {
+        return [];
+      }
+    };
 
-    let parsedPayload;
-    try {
-      parsedPayload = JSON.parse(content);
-    } catch (parseError) {
-      throw new Error('Failed to parse structured JSON from OpenAI response.');
-    }
-
-    const candidateRows = Array.isArray(parsedPayload)
-      ? parsedPayload
-      : Array.isArray(parsedPayload?.rows)
-      ? parsedPayload.rows
-      : Array.isArray(parsedPayload?.data)
-      ? parsedPayload.data
-      : [];
-
+    const parsedChunks = await Promise.all(nonEmptyChunks.map((chunk) => parseChunk(chunk)));
+    const candidateRows = parsedChunks.flat();
     const normalised = normaliseRows(candidateRows);
     const summary = computeSummaryStats(normalised);
 

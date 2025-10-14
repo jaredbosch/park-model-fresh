@@ -1,9 +1,10 @@
 import React, { useRef, useState } from 'react';
-import { Button } from './ui/button';
+import { Button } from '@/components/ui/button';
 
 const RentRollUpload = ({ onDataParsed }) => {
   const fileInputRef = useRef(null);
   const [loading, setLoading] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState('');
   const [previewData, setPreviewData] = useState(null);
   const [summary, setSummary] = useState(null);
   const [showModal, setShowModal] = useState(false);
@@ -17,17 +18,21 @@ const RentRollUpload = ({ onDataParsed }) => {
     }
 
     setLoading(true);
+    setLoadingStatus('Uploading file...');
 
     const reader = new FileReader();
     reader.onloadend = async () => {
       try {
         const base64 = reader.result.split(',')[1];
+        setLoadingStatus('Extracting text from PDF...');
+
         const response = await fetch('/api/parse-rentroll', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ file: base64, filename: file.name }),
         });
 
+        setLoadingStatus('Analyzing rent roll data...');
         const result = await response.json();
         if (result.success) {
           const rows = Array.isArray(result.data) ? result.data : [];
@@ -41,6 +46,7 @@ const RentRollUpload = ({ onDataParsed }) => {
         alert('Error: ' + error.message);
       } finally {
         setLoading(false);
+        setLoadingStatus('');
         if (input) {
           input.value = '';
         }
@@ -61,9 +67,35 @@ const RentRollUpload = ({ onDataParsed }) => {
       <Button
         onClick={() => fileInputRef.current?.click()}
         disabled={loading}
-        className="bg-blue-500 text-white hover:bg-blue-600"
+        className="flex items-center gap-2 bg-blue-500 text-white hover:bg-blue-600"
       >
-        {loading ? 'Processing...' : 'Upload Rent Roll'}
+        {loading ? (
+          <>
+            <svg
+              className="h-5 w-5 animate-spin text-white"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8v8H4z"
+              />
+            </svg>
+            {loadingStatus || 'Processing...'}
+          </>
+        ) : (
+          'Upload Rent Roll'
+        )}
       </Button>
       <input
         type="file"
