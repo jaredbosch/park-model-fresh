@@ -62,6 +62,15 @@ const RentRollUpload = ({ onDataParsed }) => {
     setShowModal(false);
   };
 
+  const formatCurrency = (value) => {
+    if (typeof value !== 'number' || Number.isNaN(value)) {
+      return '-';
+    }
+    return `$${value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  };
+
+  const warnings = Array.isArray(summary?.warnings) ? summary.warnings : [];
+
   return (
     <div>
       <Button
@@ -110,17 +119,23 @@ const RentRollUpload = ({ onDataParsed }) => {
           <div className="w-full max-w-3xl rounded-xl bg-slate-900 p-6 text-white">
             <h2 className="mb-3 text-xl font-semibold">Review Parsed Rent Roll</h2>
 
+            {warnings.length > 0 && (
+              <div className="mb-4 rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm text-yellow-200">
+                <p className="font-medium text-yellow-100">Review suggested fixes before importing:</p>
+                <ul className="ml-4 list-disc space-y-1">
+                  {warnings.map((warning, index) => (
+                    <li key={index}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {summary && (
-              <div className="mb-4 text-sm text-slate-300">
-                <p>Total Lots: {summary.totalLots}</p>
-                <p>Occupied Lots: {summary.occupiedLots}</p>
-                <p>Average Rent: ${summary.avgRent}</p>
-                <p>
-                  Mode Rent:{' '}
-                  {summary.modeRent !== null && summary.modeRent !== undefined
-                    ? `$${summary.modeRent}`
-                    : '-' }
-                </p>
+              <div className="mb-4 grid gap-2 text-sm text-slate-300 sm:grid-cols-2">
+                <p>Total Lots: {summary.totalLots ?? 0}</p>
+                <p>Occupied Lots: {summary.occupiedLots ?? 0}</p>
+                <p>Average Rent: {formatCurrency(summary.averageRent)}</p>
+                <p>Mode Rent: {formatCurrency(summary.modeRent)}</p>
               </div>
             )}
 
@@ -136,10 +151,17 @@ const RentRollUpload = ({ onDataParsed }) => {
               <tbody>
                 {previewData.slice(0, 5).map((row, index) => (
                   <tr key={index} className="border-t border-slate-700">
-                    <td className="px-2 py-1">{row.lotNumber}</td>
-                    <td className="px-2 py-1">{row.tenantName || '-'}</td>
+                    <td className="px-2 py-1">
+                      <div className="flex flex-col">
+                        <span>{row.lotNumber}</span>
+                        {row._originalLotToken && row._originalLotToken !== row.lotNumber && (
+                          <span className="text-xs text-slate-400">source: "{row._originalLotToken}"</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-2 py-1">{row.tenantName || row.tenant || '-'}</td>
                     <td className="px-2 py-1">{row.occupied ? 'Yes' : 'No'}</td>
-                    <td className="px-2 py-1">${row.rent}</td>
+                    <td className="px-2 py-1">{formatCurrency(row.rent)}</td>
                   </tr>
                 ))}
               </tbody>

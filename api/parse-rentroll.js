@@ -4,80 +4,146 @@ import pdfParse from 'pdf-parse';
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
-const toBoolean = (value) => {
-  if (typeof value === 'boolean') {
-    return value;
+const SYSTEM = `
+You extract a rent roll from text. Return STRICT JSON ONLY, no prose.
+
+Absolutely do not infer or fabricate fields. If a field isn't present on a row, omit it for that row.
+
+For each row (tenant/unit/lot), return:
+- lot_number: the exact numeric lot/site/unit identifier from the source, without text like "lot". KEEP leading zeros if present. Valid examples: "002", "020", "0021", "1306". INVALID: "lot 002", "space 02".
+- occupied: true/false. If text indicates "vacant", "empty", "–", etc., set false; otherwise true when a tenant is listed or the status clearly indicates occupied.
+- rent: the monthly base lot/space rent as a number (USD). DO NOT include utilities, taxes, insurance, fees, or "Total". Prefer a column named "RC", "Base Rent", "Lot Rent", "Space Rent", "Rent" (in that order). Only if NONE exist, leave rent absent for that row.
+- tenant (optional): string tenant name as shown; if empty row or vacant, omit.
+
+NEVER use a "Total" column or sum multiple charges. Ignore Water, Utilities, Taxes, Insurance, Fees, and similar.
+
+Rows must map only to actual units/lots/sites.
+No auto-incrementing. No guessing.
+`;
+
+const JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    rows: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          lot_number: { type: 'string', pattern: '^[0-9]{1,4}$' },
+          occupied: { type: 'boolean' },
+          rent: { type: 'number' },
+          tenant: { type: 'string' },
+        },
+        required: ['lot_number', 'occupied'],
+      },
+    },
+  },
+  required: ['rows'],
+};
+
+function normalizeLot(lotRaw) {
+  if (!lotRaw) {
+    return null;
   }
-  if (typeof value === 'number') {
-    return value > 0;
+
+  const stringValue = String(lotRaw).trim();
+  if (!stringValue) {
+    return null;
   }
-  if (typeof value === 'string') {
-    const trimmed = value.trim().toLowerCase();
-    if (!trimmed) {
-      return false;
+
+  const match = stringValue.match(/(\d{1,4})$/);
+  if (!match) {
+    return null;
+  }
+
+  const rawDigits = match[1];
+  const display = rawDigits.padStart(3, '0');
+  const numeric = parseInt(rawDigits, 10);
+
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return { display, numeric, original: stringValue };
+}
+
+function validateRows(rows) {
+  const warnings = [];
+
+  const seen = new Map();
+  const duplicates = new Set();
+  rows.forEach((row) => {
+    const key = row.lotNumber;
+    seen.set(key, (seen.get(key) || 0) + 1);
+    if (seen.get(key) > 1) {
+      duplicates.add(key);
     }
-    return ['true', 'yes', 'y', 'occupied', '1'].some((entry) => trimmed === entry);
+  });
+
+  if (duplicates.size > 0) {
+    warnings.push(`Duplicate lot numbers detected: ${Array.from(duplicates).join(', ')}`);
   }
-  return false;
-};
 
-const toNumber = (value) => {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : 0;
-};
+  const missingRent = rows.filter((row) => row.occupied && (row.rent === null || row.rent === undefined));
+  if (missingRent.length > 0) {
+    warnings.push(
+      `${missingRent.length} occupied row(s) lack rent. Check RC/Base Rent/Space Rent columns in the source.`
+    );
+  }
 
-const normaliseRows = (rows = []) =>
-  rows
-    .filter((row) => row && typeof row === 'object')
-    .map((row, index) => {
-      const occupied = toBoolean(
-        row.occupied ?? row.isOccupied ?? row.status ?? row.occupancy ?? row.vacant === false
-      );
-      const rent = toNumber(row.rent ?? row.monthlyRent ?? row.amount ?? row.payment);
-      const rawLot =
-        row.lotNumber ?? row.lot ?? row.lot_no ?? row.space ?? row.unit ?? row.site ?? row.padNumber;
-      const lotNumber = rawLot !== undefined && rawLot !== null && `${rawLot}`.trim()
-        ? `${rawLot}`.trim()
-        : `${index + 1}`;
-      const rawTenant =
-        row.tenantName ?? row.tenant ?? row.name ?? row.resident ?? row.tenant_name ?? row.occupant;
-      const tenantName = rawTenant && `${rawTenant}`.trim() ? `${rawTenant}`.trim() : null;
+  const numericLots = rows
+    .map((row) => row.lotNumeric)
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (numericLots.length >= 3) {
+    let gaps = 0;
+    for (let index = 1; index < numericLots.length; index += 1) {
+      if (numericLots[index] - numericLots[index - 1] > 1) {
+        gaps += 1;
+      }
+    }
+    if (gaps > 0) {
+      warnings.push('Non-sequential lot numbers detected. This may be normal, but review for missing rows.');
+    }
+  }
 
-      return {
-        lotNumber,
-        tenantName,
-        occupied,
-        rent,
-      };
-    });
+  return warnings;
+}
 
-function computeSummaryStats(rows = []) {
+function computeSummaryStats(rows = [], warnings = []) {
   const totalLots = rows.length;
-  const occupiedLots = rows.filter((row) => toBoolean(row.occupied)).length;
+  const occupiedLots = rows.filter((row) => row.occupied).length;
+
   const rents = rows
-    .map((row) => toNumber(row.rent))
-    .filter((rent) => !Number.isNaN(rent) && rent > 0);
-  const avgRent = rents.length ? rents.reduce((sum, rent) => sum + rent, 0) / rents.length : 0;
-  const modeRent = (() => {
-    if (rents.length === 0) {
-      return null;
+    .filter((row) => row.occupied && typeof row.rent === 'number' && Number.isFinite(row.rent))
+    .map((row) => row.rent);
+
+  const averageRent = rents.length
+    ? Math.round(rents.reduce((sum, rent) => sum + rent, 0) / rents.length)
+    : null;
+
+  const rentFrequency = new Map();
+  rents.forEach((rent) => {
+    rentFrequency.set(rent, (rentFrequency.get(rent) || 0) + 1);
+  });
+
+  let modeRent = null;
+  let highestFrequency = 0;
+  rentFrequency.forEach((count, rent) => {
+    if (count > highestFrequency) {
+      highestFrequency = count;
+      modeRent = rent;
     }
-    const counts = new Map();
-    rents.forEach((rent) => {
-      counts.set(rent, (counts.get(rent) || 0) + 1);
-    });
-    const [mode] = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
-    return mode ?? null;
-  })();
+  });
 
   return {
     totalLots,
     occupiedLots,
-    avgRent: Math.round(avgRent),
-    modeRent: typeof modeRent === 'number' && Number.isFinite(modeRent) ? modeRent : null,
+    averageRent,
+    modeRent,
+    warnings,
   };
 }
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -120,7 +186,7 @@ export default async function handler(req, res) {
             role: 'user',
             content: [
               { type: 'text', text: 'Extract text from this rent roll PDF:' },
-              { type: 'image_url', image_url: `data:application/pdf;base64,${file}` },
+              { type: 'image_url', image_url: base64Image },
             ],
           },
         ],
@@ -132,9 +198,31 @@ export default async function handler(req, res) {
       throw new Error('No text could be extracted from the provided file.');
     }
 
+    const lines = text.split(/\r?\n/);
+    const totalValues = [];
+    lines.forEach((line) => {
+      if (!/total/i.test(line)) {
+        return;
+      }
+      const matches = line.match(/[-+]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[-+]?[0-9]+(?:\.[0-9]{2})?/g);
+      if (!matches) {
+        return;
+      }
+      matches.forEach((match) => {
+        const numericString = match.replace(/[^0-9.\-]/g, '');
+        if (!numericString) {
+          return;
+        }
+        const value = Number(numericString);
+        if (Number.isFinite(value)) {
+          totalValues.push(value);
+        }
+      });
+    });
+
     const chunks = [];
-    for (let i = 0; i < text.length; i += 10000) {
-      chunks.push(text.slice(i, i + 10000));
+    for (let index = 0; index < text.length; index += 10000) {
+      chunks.push(text.slice(index, index + 10000));
     }
 
     const nonEmptyChunks = chunks.filter((chunk) => chunk.trim().length > 0);
@@ -143,28 +231,16 @@ export default async function handler(req, res) {
     }
 
     const parseChunk = async (chunk) => {
-      const prompt = `
-You are a document parser for mobile home park rent rolls.
-Extract only the base lot rent for each lot (exclude utilities such as water, trash, sewer, insurance, pet fees, or other charges).
-Return a JSON array in this format:
-[
-  { "lotNumber": number | string, "tenantName": string | null, "occupied": boolean, "rent": number }
-]
-Rules:
-- "rent" must represent the lot/base rent only. Ignore or subtract bundled utilities or other fees when possible.
-- Ignore totals, headers, or summary rows.
-- Treat missing tenant names as null.
-- If only one numeric rent-like value is present, use it as the lot rent.
-- Include every identifiable lot entry even across multiple pages.
-
-Text:
-${chunk}
-`;
-
       const response = await openaiClient.chat.completions.create({
         model: 'gpt-4o-mini',
-        response_format: { type: 'json_object' },
-        messages: [{ role: 'user', content: prompt }],
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'rent_roll', schema: JSON_SCHEMA },
+        },
+        messages: [
+          { role: 'system', content: SYSTEM },
+          { role: 'user', content: `Extract rows from this rent roll text:\n${chunk}` },
+        ],
       });
 
       const content = response.choices?.[0]?.message?.content;
@@ -174,14 +250,8 @@ ${chunk}
 
       try {
         const parsed = JSON.parse(content);
-        if (Array.isArray(parsed)) {
-          return parsed;
-        }
         if (Array.isArray(parsed?.rows)) {
           return parsed.rows;
-        }
-        if (Array.isArray(parsed?.data)) {
-          return parsed.data;
         }
         return [];
       } catch (error) {
@@ -190,11 +260,59 @@ ${chunk}
     };
 
     const parsedChunks = await Promise.all(nonEmptyChunks.map((chunk) => parseChunk(chunk)));
-    const candidateRows = parsedChunks.flat();
-    const normalised = normaliseRows(candidateRows);
-    const summary = computeSummaryStats(normalised);
+    const aiRows = parsedChunks.flat();
 
-    return res.status(200).json({ success: true, data: normalised, summary });
+    const rentMatchesTotal = new Set();
+    const totalsList = totalValues;
+
+    const rows = (aiRows || [])
+      .map((rawRow) => {
+        if (!rawRow || typeof rawRow !== 'object') {
+          return null;
+        }
+
+        const lot = normalizeLot(rawRow.lot_number);
+        if (!lot) {
+          return null;
+        }
+
+        const occupied = Boolean(rawRow.occupied);
+        const rentValue = typeof rawRow.rent === 'number' && Number.isFinite(rawRow.rent)
+          ? rawRow.rent
+          : null;
+
+        let rent = rentValue;
+        if (rent !== null && totalsList.some((value) => Math.abs(value - rent) < 0.01)) {
+          rentMatchesTotal.add(lot.display);
+          rent = null;
+        }
+
+        const tenantValue = typeof rawRow.tenant === 'string' && rawRow.tenant.trim()
+          ? rawRow.tenant.trim()
+          : null;
+
+        return {
+          lotNumber: lot.display,
+          lotNumeric: lot.numeric,
+          occupied,
+          rent,
+          tenant: tenantValue,
+          tenantName: tenantValue,
+          _originalLotToken: lot.original,
+        };
+      })
+      .filter(Boolean);
+
+    const warnings = validateRows(rows);
+    if (rentMatchesTotal.size > 0) {
+      warnings.push(
+        `Base rent not extracted for lots ${Array.from(rentMatchesTotal).join(', ')} because the value matched a "Total" amount. Please confirm manually.`
+      );
+    }
+
+    const summary = computeSummaryStats(rows, warnings);
+
+    return res.status(200).json({ success: true, data: rows, summary });
   } catch (error) {
     console.error('Error parsing rent roll:', error);
     return res.status(500).json({ success: false, error: error.message || 'Unknown error' });
