@@ -18,9 +18,11 @@ Income and expense line items must use the amounts shown in the source. Do not s
 
 const JSON_SCHEMA = {
   type: 'object',
+  additionalProperties: false,
   properties: {
     income: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         total_income: { type: 'number' },
         individual_items: {
@@ -32,6 +34,7 @@ const JSON_SCHEMA = {
     },
     expense: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         total_expense: { type: 'number' },
         individual_items: {
