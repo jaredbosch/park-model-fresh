@@ -10,7 +10,7 @@ You extract a rent roll from text. Return STRICT JSON ONLY, no prose.
 Absolutely do not infer or fabricate fields. If a field isn't present on a row, omit it for that row.
 
 For each row (tenant/unit/lot), return:
-- lot_number: the exact numeric lot/site/unit identifier from the source, without text like "lot". KEEP leading zeros if present. Valid examples: "002", "020", "0021", "1306". INVALID: "lot 002", "space 02".
+- lot_number: the exact numeric lot/site/unit identifier from the source, without text like "lot". KEEP leading zeros if present. Some communities use letter suffixes (e.g. 200-A, 200-B) for split pads—these are separate lots and must retain their suffix. Valid examples: "002", "020", "0021", "1306", "200-A", "221-B". INVALID: "lot 002", "space 02".
 - occupied: true/false. If text indicates "vacant", "empty", "–", etc., set false; otherwise true when a tenant is listed or the status clearly indicates occupied.
 - rent: the monthly base lot/space rent as a number (USD). DO NOT include utilities, taxes, insurance, fees, or "Total". Prefer a column named "RC", "Base Rent", "Lot Rent", "Space Rent", "Rent" (in that order). Only if NONE exist, leave rent absent for that row.
 - tenant (optional): string tenant name as shown; if empty row or vacant, omit.
@@ -29,7 +29,7 @@ const JSON_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          lot_number: { type: 'string', pattern: '^[0-9]{1,4}$' },
+          lot_number: { type: 'string', pattern: '^[0-9]{1,4}(-[A-Z]{1,2})?$' },
           occupied: { type: 'boolean' },
           rent: { type: 'number' },
           tenant: { type: 'string' },
@@ -46,25 +46,41 @@ function normalizeLot(lotRaw) {
     return null;
   }
 
-  const stringValue = String(lotRaw).trim();
-  if (!stringValue) {
+  const original = String(lotRaw).trim();
+  if (!original) {
     return null;
   }
 
-  const match = stringValue.match(/(\d{1,4})$/);
+  let normalized = original.toUpperCase();
+
+  const compactMatch = normalized.match(/^(\d{1,4})([A-Z])$/);
+  if (compactMatch) {
+    normalized = `${compactMatch[1]}-${compactMatch[2]}`;
+  }
+
+  const match = normalized.match(/^(\d{1,4})(-[A-Z]{1,2})?$/);
   if (!match) {
     return null;
   }
 
-  const rawDigits = match[1];
-  const display = rawDigits.padStart(3, '0');
-  const numeric = parseInt(rawDigits, 10);
+  const numericSegment = match[1];
+  const suffixSegment = match[2] ? match[2].toUpperCase() : '';
+  const numeric = parseInt(numericSegment, 10);
 
   if (!Number.isFinite(numeric)) {
     return null;
   }
 
-  return { display, numeric, original: stringValue };
+  const displayNumeric = numericSegment.padStart(3, '0');
+  const suffix = suffixSegment ? suffixSegment.replace('-', '') : '';
+  const display = `${displayNumeric}${suffix ? `-${suffix}` : ''}`;
+
+  return {
+    display,
+    numeric,
+    original,
+    suffix,
+  };
 }
 
 function validateRows(rows) {
@@ -343,6 +359,7 @@ export default async function handler(req, res) {
         return {
           lotNumber: lot.display,
           lotNumeric: lot.numeric,
+          lotSuffix: lot.suffix || '',
           occupied,
           rent,
           tenant: tenantValue,
@@ -359,6 +376,24 @@ export default async function handler(req, res) {
       missingRent: validation.missingRentLots.has(row.lotNumber) && row.occupied,
     }));
 
+    const sortedRows = decoratedRows.slice().sort((a, b) => {
+      if (a.lotNumeric === b.lotNumeric) {
+        const suffixA = a.lotSuffix || '';
+        const suffixB = b.lotSuffix || '';
+        if (suffixA === suffixB) {
+          return a.lotNumber.localeCompare(b.lotNumber);
+        }
+        if (!suffixA) {
+          return -1;
+        }
+        if (!suffixB) {
+          return 1;
+        }
+        return suffixA.localeCompare(suffixB);
+      }
+      return a.lotNumeric - b.lotNumeric;
+    });
+
     const warnings = [...validation.warnings];
     if (rentMatchesTotal.size > 0) {
       warnings.push({
@@ -368,9 +403,9 @@ export default async function handler(req, res) {
       });
     }
 
-    const summary = computeSummaryStats(decoratedRows, warnings);
+    const summary = computeSummaryStats(sortedRows, warnings);
 
-    return res.status(200).json({ success: true, data: decoratedRows, summary });
+    return res.status(200).json({ success: true, data: sortedRows, summary });
   } catch (error) {
     console.error('Error parsing rent roll:', error);
     return res.status(500).json({ success: false, error: error.message || 'Unknown error' });
