@@ -46,7 +46,7 @@ const JSON_SCHEMA = {
     },
     net_income: { type: 'number' },
   },
-  required: ['income', 'expense', 'net_income'],
+  required: ['income', 'expense'],
 };
 
 const UNMAPPED_TOTAL_KEYS = new Set(['total', 'totals', 'grand total', 'net income', 'net']);
