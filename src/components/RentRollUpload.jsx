@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Button } from '@/components/ui/button';
+import { Button } from './ui/button';
 
 const RentRollUpload = ({ onDataParsed }) => {
   const fileInputRef = useRef(null);
