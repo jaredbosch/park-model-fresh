@@ -138,14 +138,18 @@ async function parseChunk(chunk) {
         ],
       },
     ],
-    text_format: 'json',
+    text: {
+      format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'PnLExtraction',
+          schema: JSON_SCHEMA,
+        },
+      },
+    },
   });
 
-  const outputText =
-    response.output_text ||
-    response.output?.[0]?.content?.find?.((block) => block.type === 'output_text')?.text ||
-    response.output?.[0]?.content?.[0]?.text ||
-    '';
+  const outputText = response.output?.[0]?.content?.[0]?.text || '';
 
   if (!outputText) {
     throw new Error('Unexpected response format from OpenAI for P&L parsing.');
