@@ -30,7 +30,7 @@ const JSON_SCHEMA = {
           additionalProperties: { type: 'number' },
         },
       },
-      required: ['total_income', 'individual_items'],
+      required: ['total_income'], // ✅ OpenAI strict validator: only declare keys present in `properties`
     },
     expense: {
       type: 'object',
@@ -42,7 +42,7 @@ const JSON_SCHEMA = {
           additionalProperties: { type: 'number' },
         },
       },
-      required: ['total_expense', 'individual_items'],
+      required: ['total_expense'],
     },
     net_income: { type: 'number' },
   },
