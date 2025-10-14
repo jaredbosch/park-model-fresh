@@ -123,7 +123,7 @@ async function parseChunk(chunk) {
         role: 'system',
         content: [
           {
-            type: 'text',
+            type: 'input_text',
             text: SYSTEM,
           },
         ],
@@ -132,22 +132,27 @@ async function parseChunk(chunk) {
         role: 'user',
         content: [
           {
-            type: 'text',
+            type: 'input_text',
             text: prompt,
           },
         ],
       },
     ],
-    text: { format: "json" },
+    text_format: 'json',
   });
 
-  const message = response.output?.[0]?.content?.[0];
-  if (!message || message.type !== 'output_text') {
+  const outputText =
+    response.output_text ||
+    response.output?.[0]?.content?.find?.((block) => block.type === 'output_text')?.text ||
+    response.output?.[0]?.content?.[0]?.text ||
+    '';
+
+  if (!outputText) {
     throw new Error('Unexpected response format from OpenAI for P&L parsing.');
   }
 
   try {
-    return JSON.parse(message.text);
+    return JSON.parse(outputText);
   } catch (err) {
     console.error('Unable to parse OpenAI P&L JSON:', err);
     return null;
