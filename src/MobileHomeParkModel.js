@@ -816,29 +816,38 @@ const MobileHomeParkModel = () => {
     ]
   );
 
-  const quickPopulatePreview = useMemo(() => {
-    if (!Array.isArray(units) || units.length === 0) {
-      return {
-        totalLots: 0,
-        occupiedLots: 0,
-        averageRent: 0,
-        totalRentIncome: 0,
-      };
-    }
+  let quickPopulatePreview = {
+    totalLots: 0,
+    occupiedLots: 0,
+    averageRent: 0,
+    totalRentIncome: 0,
+  };
 
-    let occupiedLots = 0;
-    let occupiedRentSum = 0;
-    const occupiedRentValues = [];
-
-    units.forEach((unit) => {
-      if (!unit) {
-        return;
+  try {
+    quickPopulatePreview = useMemo(() => {
+      if (!Array.isArray(units) || units.length === 0) {
+        return {
+          totalLots: 0,
+          occupiedLots: 0,
+          averageRent: 0,
+          totalRentIncome: 0,
+        };
       }
 
-      const rentValue = Number(unit.rent);
+      let occupiedLots = 0;
+      let occupiedRentSum = 0;
+      const occupiedRentValues = [];
 
-      if (unit.occupied) {
-        occupiedLots += 1;
+      units.forEach((unit) => {
+        if (!unit) {
+          return;
+        }
+
+        const rentValue = Number(unit.rent);
+
+        if (unit.occupied) {
+          occupiedLots += 1;
+        }
 
         if (Number.isFinite(rentValue) && rentValue > 0) {
           occupiedRentValues.push(rentValue);
@@ -846,22 +855,28 @@ const MobileHomeParkModel = () => {
         } else if (Number.isFinite(rentValue)) {
           occupiedRentSum += Math.max(rentValue, 0);
         }
-      }
-    });
+      });
 
-    const averageRent =
-      occupiedRentValues.length > 0
-        ? occupiedRentValues.reduce((sum, value) => sum + value, 0) /
-          occupiedRentValues.length
-        : 0;
+      const totalLots = units.length;
+      const averageRent =
+        occupiedRentValues.length > 0
+          ? Math.round(
+              occupiedRentValues.reduce((a, b) => a + b, 0) /
+                occupiedRentValues.length
+            )
+          : 0;
 
-    return {
-      totalLots: units.length,
-      occupiedLots,
-      averageRent,
-      totalRentIncome: occupiedRentSum * 12,
-    };
-  }, [units]);
+      return {
+        totalLots,
+        occupiedLots,
+        averageRent,
+        totalRentIncome: occupiedRentSum,
+      };
+    }, [units]);
+  } catch (err) {
+    console.error('❌ useMemo initialization error:', err);
+    quickPopulatePreview = null;
+  }
 
   const parsedVacantTarget = useMemo(() => {
     const target = parseInt(vacantTargetLots, 10);
@@ -3263,7 +3278,20 @@ ${reportContent.innerHTML}
   );
 
   if (!supabase) {
-    return <div>Connecting to database...</div>;
+    console.warn('⚠️ Supabase client not initialized yet');
+    return (
+      <div style={{ color: 'white', textAlign: 'center', marginTop: '20%' }}>
+        Connecting to database...
+      </div>
+    );
+  }
+
+  if (!quickPopulatePreview) {
+    return (
+      <div style={{ color: 'white', textAlign: 'center', marginTop: '20%' }}>
+        Loading park data...
+      </div>
+    );
   }
 
   return (
