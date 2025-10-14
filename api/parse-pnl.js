@@ -30,7 +30,7 @@ const JSON_SCHEMA = {
           additionalProperties: { type: 'number' },
         },
       },
-      required: ['individual_items'],
+      required: ['total_income', 'individual_items'],
     },
     expense: {
       type: 'object',
@@ -42,11 +42,11 @@ const JSON_SCHEMA = {
           additionalProperties: { type: 'number' },
         },
       },
-      required: ['individual_items'],
+      required: ['total_expense', 'individual_items'],
     },
     net_income: { type: 'number' },
   },
-  required: ['income', 'expense'],
+  required: ['income', 'expense', 'net_income'],
 };
 
 const UNMAPPED_TOTAL_KEYS = new Set(['total', 'totals', 'grand total', 'net income', 'net']);
