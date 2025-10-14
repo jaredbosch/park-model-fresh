@@ -16,11 +16,17 @@ import { useToast } from './components/ToastProvider';
 import RentRollUpload from './components/RentRollUpload';
 import PnLUpload from './components/PnLUpload';
 
+console.log('Supabase instance:', supabase);
+
+if (!supabase) {
+  console.error('⚠️ Supabase client not initialized yet');
+}
+
 const isSupabaseConfigured = Boolean(supabase);
 
 let globalUser = null;
 
-if (supabase) {
+if (supabase && typeof supabase.auth !== 'undefined') {
   supabase.auth.onAuthStateChange((_event, session) => {
     globalUser = session?.user || null;
 
@@ -30,6 +36,8 @@ if (supabase) {
       console.warn('⚠️ No Supabase session found yet');
     }
   });
+} else if (supabase) {
+  console.error('Supabase auth API is unavailable on the current client instance.');
 } else {
   console.error('Supabase client not initialized');
 }
@@ -771,21 +779,29 @@ const MobileHomeParkModel = () => {
         setActualIncome(Math.round(lotRentTotal));
       }
 
-      const nextTotals =
-        totals && typeof totals === 'object'
-          ? {
-              ...totals,
-              lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)),
-            }
-          : { lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)) };
+      try {
+        const nextTotals =
+          totals && typeof totals === 'object'
+            ? {
+                ...totals,
+                lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)),
+              }
+            : { lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)) };
 
-      setPnlTotals(nextTotals);
-      setPnlMappingStats(stats || null);
+        setPnlTotals(nextTotals);
+        setPnlMappingStats(stats || null);
 
-      showToast({
-        message: '✅ P&L Imported and Mapped Successfully',
-        tone: 'success',
-      });
+        showToast({
+          message: '✅ P&L Imported and Mapped Successfully',
+          tone: 'success',
+        });
+      } catch (err) {
+        console.error('❌ Error setting P&L totals:', err);
+        showToast({
+          message: '⚠️ Error processing P&L import',
+          tone: 'error',
+        });
+      }
     },
     [
       setAdditionalIncome,
