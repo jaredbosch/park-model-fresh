@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import LandingHero from './components/LandingHero';
 import AuthPortal from './components/AuthPortal';
-import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { supabase } from './lib/supabaseClient';
+
+const isSupabaseConfigured = Boolean(supabase);
 
 const logUserActivity = async ({ action, metadata, userId }) => {
   if (!supabase || !isSupabaseConfigured) {

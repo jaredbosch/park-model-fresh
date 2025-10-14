@@ -9,24 +9,30 @@ import {
   Percent,
   PieChart,
 } from 'lucide-react';
-import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { supabase } from './lib/supabaseClient';
 import AuthModal from './components/AuthModal';
 import ProfileModal from './components/ProfileModal';
 import { useToast } from './components/ToastProvider';
 import RentRollUpload from './components/RentRollUpload';
 import PnLUpload from './components/PnLUpload';
 
+const isSupabaseConfigured = Boolean(supabase);
+
 let globalUser = null;
 
-supabase.auth.onAuthStateChange((_event, session) => {
-  globalUser = session?.user || null;
+if (supabase) {
+  supabase.auth.onAuthStateChange((_event, session) => {
+    globalUser = session?.user || null;
 
-  if (globalUser?.email) {
-    console.log(`✅ Supabase connected as ${globalUser.email}`);
-  } else {
-    console.warn('⚠️ No Supabase session found yet');
-  }
-});
+    if (globalUser?.email) {
+      console.log(`✅ Supabase connected as ${globalUser.email}`);
+    } else {
+      console.warn('⚠️ No Supabase session found yet');
+    }
+  });
+} else {
+  console.error('Supabase client not initialized');
+}
 
 const normaliseReportState = (state) => {
   if (!state) {
@@ -3239,6 +3245,10 @@ ${reportContent.innerHTML}
       supabase,
     ]
   );
+
+  if (!supabase) {
+    return <div>Connecting to database...</div>;
+  }
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">

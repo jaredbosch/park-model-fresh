@@ -1,7 +1,7 @@
 // src/AuthPortal.jsx
 import React, { useEffect } from 'react';
 import { Auth, ThemeSupa } from '@supabase/auth-ui-react';
-import { supabase } from '../supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 import { useNavigate } from 'react-router-dom';
 
 export default function AuthPortal({ isOpen, onClose }) {
@@ -12,6 +12,10 @@ export default function AuthPortal({ isOpen, onClose }) {
 
   // Redirect to /app after successful login
   useEffect(() => {
+    if (!supabase) {
+      return undefined;
+    }
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event) => {
@@ -23,6 +27,16 @@ export default function AuthPortal({ isOpen, onClose }) {
 
     return () => subscription.unsubscribe();
   }, [navigate, onClose]);
+
+  if (!supabase) {
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-xl shadow-2xl p-8 w-full max-w-md text-center">
+          <p className="text-sm text-gray-600">Supabase is not configured. Please add your environment variables.</p>
+        </div>
+      </div>
+    );
+  }
 
   // Render the Supabase Auth UI
   return (

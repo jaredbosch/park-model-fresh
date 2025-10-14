@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { supabase, isSupabaseConfigured } from '../supabaseClient';
+import { supabase } from '../lib/supabaseClient';
 import { useToast } from './ToastProvider';
+
+const isSupabaseConfigured = Boolean(supabase);
 
 const DEFAULT_FORM = {
   name: '',
