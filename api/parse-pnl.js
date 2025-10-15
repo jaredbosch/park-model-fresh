@@ -34,9 +34,9 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
     });
 
     // Ask GPT-4o to extract structured data
-    const response = await openaiClient.responses.create({
+    const response = await openaiClient.chat.completions.create({
       model: 'gpt-4o',
-      input: [
+      messages: [
         {
           role: 'system',
           content:
@@ -50,10 +50,15 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
           ],
         },
       ],
-      text_format: 'json',
+      response_format: { type: 'json_object' },
     });
 
-    const content = response.output?.[0]?.content?.[0]?.text;
+    let content = response.choices?.[0]?.message?.content;
+    if (Array.isArray(content)) {
+      const textPart = content.find((part) => typeof part?.text === 'string');
+      content = textPart?.text;
+    }
+
     if (!content) {
       throw new Error('No structured content returned from OpenAI.');
     }
