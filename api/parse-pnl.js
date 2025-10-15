@@ -88,6 +88,72 @@ function buildFallbackResult(fallbackRows) {
   };
 }
 
+function buildResponsePayload(merged = {}, text = '') {
+  const safeList = (items) => {
+    if (!Array.isArray(items)) {
+      if (items && typeof items === 'object') {
+        return Object.entries(items)
+          .map(([label, amount]) => ({ label, amount: Number(amount) }))
+          .filter((entry) => entry.label && Number.isFinite(entry.amount));
+      }
+      return [];
+    }
+
+    return items
+      .map((entry) => ({
+        label: entry?.label,
+        amount: Number(entry?.amount),
+      }))
+      .filter((entry) => entry.label && Number.isFinite(entry.amount));
+  };
+
+  const incomeList = safeList(merged?.income?.individual_items);
+  const expenseList = safeList(merged?.expense?.individual_items);
+  const otherList = safeList(merged?.other_expense?.individual_items);
+
+  if (incomeList.length === 0 && text?.length > 200) {
+    const fallback = extractFallbackRows(text);
+    fallback.forEach((row) => {
+      if (/4\d{3}/.test(row.label)) {
+        incomeList.push({ label: row.label, amount: row.amount });
+      } else {
+        expenseList.push({ label: row.label, amount: row.amount });
+      }
+    });
+  }
+
+  if (otherList.length > 0) {
+    otherList.forEach((row) => {
+      expenseList.push({ label: row.label, amount: row.amount });
+    });
+  }
+
+  const incomeTotal =
+    merged?.income?.total_income ??
+    incomeList.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+  const expenseTotal =
+    merged?.expense?.total_expense ??
+    expenseList.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+  const netIncome =
+    merged?.net_income ??
+    incomeList.reduce((sum, entry) => sum + (entry.amount || 0), 0) -
+      expenseList.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+
+  const payload = {
+    income: {
+      total_income: incomeTotal,
+      individual_items: incomeList,
+    },
+    expense: {
+      total_expense: expenseTotal,
+      individual_items: expenseList,
+    },
+    net_income: Number.isFinite(netIncome) ? netIncome : 0,
+  };
+
+  return payload;
+}
+
 function isMonthColumn(text) {
   if (!text) {
     return false;
@@ -429,11 +495,11 @@ export default async function handler(req, res) {
     if (fallbackRows.length > 10) {
       console.log('✅ Using fallback extraction, skipping OpenAI call');
       const parsed = buildFallbackResult(fallbackRows);
+      const payload = buildResponsePayload(parsed, text);
 
       const metadata = {
-        income_items: Object.keys(parsed.income.individual_items).length,
-        expense_items: Object.keys(parsed.expense.individual_items).length,
-        other_expense_items: Object.keys(parsed.other_expense.individual_items).length,
+        income_items: payload.income.individual_items.length,
+        expense_items: payload.expense.individual_items.length,
         source_filename: filename,
         extraction_strategy: 'fallback-regex',
       };
@@ -442,7 +508,7 @@ export default async function handler(req, res) {
         try {
           await supabase.from('parsed_pnls').insert({
             filename,
-            parsed_json: parsed,
+            parsed_json: payload,
             metadata,
             parsed_at: new Date().toISOString(),
             model_used: 'fallback-regex',
@@ -454,24 +520,24 @@ export default async function handler(req, res) {
         console.warn('Supabase client not available; skipping parsed P&L persistence.');
       }
 
-      res.status(200).json({ success: true, data: parsed, metadata });
+      res.status(200).json({ success: true, data: payload, metadata });
       return;
     }
 
     const parsed = parsePnlText(text);
 
-    const incomeCount = Object.keys(parsed.income.individual_items).length;
-    const expenseCount = Object.keys(parsed.expense.individual_items).length;
-    const otherExpenseCount = Object.keys(parsed.other_expense.individual_items).length;
-
-    if (incomeCount === 0 && expenseCount === 0 && otherExpenseCount === 0) {
+    if (
+      Object.keys(parsed.income.individual_items).length === 0 &&
+      Object.keys(parsed.expense.individual_items).length === 0 &&
+      Object.keys(parsed.other_expense.individual_items).length === 0
+    ) {
       if (fallbackRows.length > 0) {
         console.warn('⚠️ Structured parser returned no rows; using fallback extraction instead.');
         const fallbackParsed = buildFallbackResult(fallbackRows);
+        const payload = buildResponsePayload(fallbackParsed, text);
         const metadata = {
-          income_items: Object.keys(fallbackParsed.income.individual_items).length,
-          expense_items: Object.keys(fallbackParsed.expense.individual_items).length,
-          other_expense_items: Object.keys(fallbackParsed.other_expense.individual_items).length,
+          income_items: payload.income.individual_items.length,
+          expense_items: payload.expense.individual_items.length,
           source_filename: filename,
           extraction_strategy: 'fallback-regex',
         };
@@ -480,7 +546,7 @@ export default async function handler(req, res) {
           try {
             await supabase.from('parsed_pnls').insert({
               filename,
-              parsed_json: fallbackParsed,
+              parsed_json: payload,
               metadata,
               parsed_at: new Date().toISOString(),
               model_used: 'fallback-regex',
@@ -492,7 +558,7 @@ export default async function handler(req, res) {
           console.warn('Supabase client not available; skipping parsed P&L persistence.');
         }
 
-        res.status(200).json({ success: true, data: fallbackParsed, metadata });
+        res.status(200).json({ success: true, data: payload, metadata });
         return;
       }
 
@@ -500,10 +566,11 @@ export default async function handler(req, res) {
       return;
     }
 
+    const payload = buildResponsePayload(parsed, text);
+
     const metadata = {
-      income_items: incomeCount,
-      expense_items: expenseCount,
-      other_expense_items: otherExpenseCount,
+      income_items: payload.income.individual_items.length,
+      expense_items: payload.expense.individual_items.length,
       source_filename: filename,
     };
 
@@ -511,7 +578,7 @@ export default async function handler(req, res) {
       try {
         await supabase.from('parsed_pnls').insert({
           filename,
-          parsed_json: parsed,
+          parsed_json: payload,
           metadata,
           parsed_at: new Date().toISOString(),
           model_used: 'gpt-4.1-mini',
@@ -523,7 +590,7 @@ export default async function handler(req, res) {
       console.warn('Supabase client not available; skipping parsed P&L persistence.');
     }
 
-    res.status(200).json({ success: true, data: parsed, metadata });
+    res.status(200).json({ success: true, data: payload, metadata });
   } catch (error) {
     console.error('Error parsing P&L:', error);
     const statusCode = error?.statusCode || 500;
