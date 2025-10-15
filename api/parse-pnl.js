@@ -53,6 +53,155 @@ const UNMAPPED_TOTAL_KEYS = new Set(['total', 'totals', 'grand total', 'net inco
 
 const MAX_CHARS_PER_CHUNK = 9000;
 
+const MONTH_TOKEN_REGEX = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s|[-\/\'’])?\d{0,4}$/i;
+
+function parseDelimitedRow(line) {
+  if (!line) {
+    return null;
+  }
+
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.includes(',')) {
+    return trimmed
+      .split(',')
+      .map((cell) => cell.trim())
+      .filter((cell) => cell.length > 0);
+  }
+
+  const tabSplit = trimmed.split(/\t+/);
+  if (tabSplit.length > 1) {
+    return tabSplit.map((cell) => cell.trim()).filter((cell) => cell.length > 0);
+  }
+
+  const spaceSplit = trimmed.split(/\s{2,}/);
+  if (spaceSplit.length > 1) {
+    return spaceSplit.map((cell) => cell.trim()).filter((cell) => cell.length > 0);
+  }
+
+  return [trimmed];
+}
+
+function isMonthToken(token) {
+  if (!token) {
+    return false;
+  }
+  return MONTH_TOKEN_REGEX.test(token.trim());
+}
+
+function isMonthlyHeader(cells) {
+  if (!cells || cells.length < 3) {
+    return false;
+  }
+
+  let monthCount = 0;
+  for (let index = 1; index < cells.length; index += 1) {
+    if (isMonthToken(cells[index])) {
+      monthCount += 1;
+    }
+  }
+
+  return monthCount >= 3;
+}
+
+function parseNumericValue(cell) {
+  if (!cell) {
+    return null;
+  }
+
+  const trimmed = cell.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const hasParens = trimmed.includes('(') && trimmed.includes(')');
+  const hasTrailingMinus = trimmed.endsWith('-');
+  const sanitized = trimmed
+    .replace(/\((.*)\)/, '$1')
+    .replace(/[^0-9.,-]/g, '')
+    .replace(/,/g, '');
+
+  if (!sanitized) {
+    return null;
+  }
+
+  const value = Number.parseFloat(sanitized);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  if (hasParens || hasTrailingMinus) {
+    return value > 0 ? -value : value;
+  }
+
+  return value;
+}
+
+function collapseMonthlyRecapTables(text) {
+  if (!text) {
+    return text;
+  }
+
+  const lines = text.split(/\r?\n/);
+  const output = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const row = parseDelimitedRow(line);
+
+    if (row && row.length >= 3 && isMonthlyHeader(row)) {
+      // skip header row, process following account lines until break condition
+      while (index + 1 < lines.length) {
+        const nextLine = lines[index + 1];
+        const nextRow = parseDelimitedRow(nextLine);
+
+        if (!nextLine.trim()) {
+          index += 1;
+          output.push('');
+          break;
+        }
+
+        if (!nextRow || nextRow.length < 2 || isMonthlyHeader(nextRow)) {
+          break;
+        }
+
+        const label = nextRow[0]?.trim();
+        if (!label || isMonthToken(label)) {
+          index += 1;
+          continue;
+        }
+
+        let amount = null;
+        for (let cellIndex = nextRow.length - 1; cellIndex >= 1; cellIndex -= 1) {
+          const numeric = parseNumericValue(nextRow[cellIndex]);
+          if (Number.isFinite(numeric)) {
+            amount = numeric;
+            break;
+          }
+        }
+
+        if (!Number.isFinite(amount)) {
+          index += 1;
+          continue;
+        }
+
+        const amountString = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+        output.push(`${label}: ${amountString}`);
+        index += 1;
+      }
+
+      continue;
+    }
+
+    output.push(line);
+  }
+
+  return output.join('\n');
+}
+
 function ensureClient() {
   if (!openaiClient) {
     const error = new Error('OpenAI API key is not configured.');
@@ -275,6 +424,8 @@ export default async function handler(req, res) {
     if (!text || text.length < 200) {
       text = await performOcrFallback(file);
     }
+
+    text = collapseMonthlyRecapTables(text);
 
     if (!text || text.length === 0) {
       res.status(422).json({ success: false, error: 'Unable to extract text from document.' });
