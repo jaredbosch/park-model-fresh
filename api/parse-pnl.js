@@ -45,8 +45,8 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
         {
           role: 'user',
           content: [
-            { type: 'input_text', text: 'Extract structured P&L data.' },
-            { type: 'input_file', file_id: fileUpload.id },
+            { type: 'text', text: 'Extract structured P&L data.' },
+            { type: 'file', file_id: fileUpload.id },
           ],
         },
       ],
