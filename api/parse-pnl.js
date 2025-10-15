@@ -1,6 +1,8 @@
 import OpenAI from 'openai';
 import pdfParse from 'pdf-parse';
 import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
@@ -12,10 +14,72 @@ const supabase =
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
+const categoryMapPath = path.resolve(process.cwd(), 'config', 'category_map.json');
+let categoryMap = {};
+try {
+  if (fs.existsSync(categoryMapPath)) {
+    const raw = fs.readFileSync(categoryMapPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      categoryMap = parsed;
+    }
+  }
+} catch (error) {
+  console.warn('Unable to load category map configuration:', error);
+}
+
 const MONTH_HEADERS = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)$/i;
 
 const SUMMARY_TERMS = /(total|subtotal|grand|net)/i;
 const SUMMARY_COLUMN = /^(ytd|total|grand\s+total)$/i;
+
+const STRUCTURED_SYSTEM_PROMPT =
+  'Extract structured Profit & Loss data from text into JSON format with income, expense, other expense, and net income totals. Identify account level rows only.';
+
+const STRUCTURED_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    income: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          label: { type: 'string' },
+          amount: { type: 'number' },
+        },
+        required: ['label', 'amount'],
+      },
+    },
+    expense: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          label: { type: 'string' },
+          amount: { type: 'number' },
+        },
+        required: ['label', 'amount'],
+      },
+    },
+    other_expense: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          label: { type: 'string' },
+          amount: { type: 'number' },
+        },
+        required: ['label', 'amount'],
+      },
+    },
+    net_income: { type: 'number' },
+  },
+  required: ['income', 'expense'],
+};
 
 function normalizeText(rawText = '') {
   return rawText
@@ -88,6 +152,34 @@ function buildFallbackResult(fallbackRows) {
   };
 }
 
+function normaliseLabelKey(label = '') {
+  return label.toLowerCase().trim();
+}
+
+function mapCategoryLabel(label = '') {
+  const normalized = normaliseLabelKey(label);
+  if (!normalized) {
+    return null;
+  }
+
+  for (const [category, synonyms] of Object.entries(categoryMap)) {
+    if (!synonyms || !Array.isArray(synonyms)) {
+      continue;
+    }
+
+    if (normaliseLabelKey(category) && normalized.includes(normaliseLabelKey(category))) {
+      return category;
+    }
+
+    const matched = synonyms.some((syn) => normalized.includes(normaliseLabelKey(syn)));
+    if (matched) {
+      return category;
+    }
+  }
+
+  return null;
+}
+
 function buildResponsePayload(merged = {}, text = '') {
   const safeList = (items) => {
     if (!Array.isArray(items)) {
@@ -128,30 +220,74 @@ function buildResponsePayload(merged = {}, text = '') {
     });
   }
 
+  const annotateList = (list, section) => {
+    return list.map((entry) => {
+      const suggestion = mapCategoryLabel(entry.label);
+      return {
+        ...entry,
+        suggestedCategory: suggestion || null,
+        section,
+      };
+    });
+  };
+
+  const annotatedIncome = annotateList(incomeList, 'income');
+  const annotatedExpense = annotateList(expenseList, 'expense');
+
   const incomeTotal =
     merged?.income?.total_income ??
-    incomeList.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+    annotatedIncome.reduce((sum, entry) => sum + (entry.amount || 0), 0);
   const expenseTotal =
     merged?.expense?.total_expense ??
-    expenseList.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+    annotatedExpense.reduce((sum, entry) => sum + (entry.amount || 0), 0);
   const netIncome =
     merged?.net_income ??
-    incomeList.reduce((sum, entry) => sum + (entry.amount || 0), 0) -
-      expenseList.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+    annotatedIncome.reduce((sum, entry) => sum + (entry.amount || 0), 0) -
+      annotatedExpense.reduce((sum, entry) => sum + (entry.amount || 0), 0);
+
+  const categorySuggestions = {};
+  const unmapped = [];
+
+  const addSuggestions = (list) => {
+    for (const entry of list) {
+      const key = normaliseLabelKey(entry.label);
+      if (!key) {
+        continue;
+      }
+      if (entry.suggestedCategory) {
+        categorySuggestions[key] = {
+          category: entry.suggestedCategory,
+          source: 'synonym',
+        };
+      } else {
+        unmapped.push(entry.label);
+      }
+    }
+  };
+
+  addSuggestions(annotatedIncome);
+  addSuggestions(annotatedExpense);
 
   const payload = {
     income: {
       total_income: incomeTotal,
-      individual_items: incomeList,
+      individual_items: annotatedIncome.map(({ suggestedCategory, section, ...rest }) => rest),
     },
     expense: {
       total_expense: expenseTotal,
-      individual_items: expenseList,
+      individual_items: annotatedExpense.map(({ suggestedCategory, section, ...rest }) => rest),
     },
     net_income: Number.isFinite(netIncome) ? netIncome : 0,
+    category_suggestions: categorySuggestions,
+    unmapped,
   };
 
-  return payload;
+  return {
+    payload,
+    categorySuggestions,
+    unmapped,
+    annotated: { income: annotatedIncome, expense: annotatedExpense },
+  };
 }
 
 function isMonthColumn(text) {
@@ -407,6 +543,227 @@ function parsePnlText(text) {
   return result;
 }
 
+function countLineItems(result = {}) {
+  const categories = ['income', 'expense', 'other_expense'];
+  return categories.reduce((count, key) => {
+    const items = result?.[key]?.individual_items;
+    if (items && typeof items === 'object') {
+      return count + Object.keys(items).length;
+    }
+    return count;
+  }, 0);
+}
+
+function normaliseStructuredResult(structured) {
+  if (!structured || typeof structured !== 'object') {
+    return null;
+  }
+
+  const categories = [
+    { key: 'income', totalKey: 'total_income' },
+    { key: 'expense', totalKey: 'total_expense' },
+    { key: 'other_expense', totalKey: 'total_other_expense' },
+  ];
+
+  const normalised = {
+    income: { individual_items: {}, total_income: 0 },
+    expense: { individual_items: {}, total_expense: 0 },
+    other_expense: { individual_items: {}, total_other_expense: 0 },
+    net_income: 0,
+  };
+
+  for (const { key, totalKey } of categories) {
+    const rows = Array.isArray(structured[key]) ? structured[key] : [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') {
+        continue;
+      }
+      const label = row.label || row.name;
+      const value = Number(row.amount ?? row.value);
+      if (!label || !Number.isFinite(value)) {
+        continue;
+      }
+      normalised[key].individual_items[label] =
+        (normalised[key].individual_items[label] || 0) + value;
+    }
+
+    const totals = Object.values(normalised[key].individual_items);
+    normalised[key][totalKey] = totals.reduce((sum, amount) => sum + amount, 0);
+  }
+
+  if (Number.isFinite(structured.net_income)) {
+    normalised.net_income = structured.net_income;
+  } else {
+    normalised.net_income =
+      normalised.income.total_income -
+      normalised.expense.total_expense -
+      normalised.other_expense.total_other_expense;
+  }
+
+  return normalised;
+}
+
+function mergeParsedResults(primary, secondary) {
+  if (!primary && !secondary) {
+    return null;
+  }
+  if (!primary) {
+    return secondary;
+  }
+  if (!secondary) {
+    return primary;
+  }
+
+  const categories = [
+    { key: 'income', totalKey: 'total_income' },
+    { key: 'expense', totalKey: 'total_expense' },
+    { key: 'other_expense', totalKey: 'total_other_expense' },
+  ];
+
+  const merged = {
+    income: { individual_items: {}, total_income: 0 },
+    expense: { individual_items: {}, total_expense: 0 },
+    other_expense: { individual_items: {}, total_other_expense: 0 },
+    net_income: 0,
+  };
+
+  const incorporate = (source) => {
+    for (const { key, totalKey } of categories) {
+      const items = source?.[key]?.individual_items;
+      if (!items || typeof items !== 'object') {
+        continue;
+      }
+      for (const [label, value] of Object.entries(items)) {
+        if (!label || !Number.isFinite(Number(value))) {
+          continue;
+        }
+        merged[key].individual_items[label] =
+          (merged[key].individual_items[label] || 0) + Number(value);
+      }
+      const totals = Object.values(merged[key].individual_items);
+      merged[key][totalKey] = totals.reduce((sum, amount) => sum + amount, 0);
+    }
+
+    if (Number.isFinite(source?.net_income)) {
+      merged.net_income = source.net_income;
+    }
+  };
+
+  incorporate(primary);
+  incorporate(secondary);
+
+  if (!Number.isFinite(merged.net_income)) {
+    merged.net_income =
+      merged.income.total_income -
+      merged.expense.total_expense -
+      merged.other_expense.total_other_expense;
+  }
+
+  return merged;
+}
+
+async function callStructuredExtraction(text) {
+  if (!text || !openaiClient) {
+    return null;
+  }
+
+  try {
+    const response = await openaiClient.responses.create({
+      model: 'gpt-4.1-mini',
+      input: [
+        {
+          role: 'system',
+          content: [{ type: 'input_text', text: STRUCTURED_SYSTEM_PROMPT }],
+        },
+        {
+          role: 'user',
+          content: [{ type: 'input_text', text }],
+        },
+      ],
+      text: {
+        format: {
+          name: 'PnLStructuredExtraction',
+          type: 'json_schema',
+          schema: STRUCTURED_SCHEMA,
+        },
+      },
+    });
+
+    const rawOutput = response.output_text?.trim() ||
+      response.output?.[0]?.content?.[0]?.text?.trim();
+
+    if (!rawOutput) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawOutput);
+    return normaliseStructuredResult(parsed);
+  } catch (error) {
+    console.warn('Structured P&L extraction failed:', error);
+    return null;
+  }
+}
+
+async function fetchEmbeddingSuggestions(labels) {
+  if (!labels || labels.length === 0 || !openaiClient || !supabase) {
+    return {};
+  }
+
+  try {
+    const uniqueLabels = Array.from(new Set(labels.filter(Boolean)));
+    if (uniqueLabels.length === 0) {
+      return {};
+    }
+
+    const embeddingResponse = await openaiClient.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: uniqueLabels,
+    });
+
+    const suggestions = {};
+
+    await Promise.all(
+      uniqueLabels.map(async (label, index) => {
+        const embedding = embeddingResponse.data?.[index]?.embedding;
+        if (!embedding) {
+          return;
+        }
+
+        try {
+          const { data, error } = await supabase.rpc('match_label_embedding', {
+            query_embedding: embedding,
+            match_threshold: 0.85,
+            match_count: 1,
+          });
+
+          if (error) {
+            console.warn('Supabase embedding match error:', error);
+            return;
+          }
+
+          if (Array.isArray(data) && data.length > 0) {
+            const match = data[0];
+            if (match?.mapped_category) {
+              suggestions[normaliseLabelKey(label)] = {
+                category: match.mapped_category,
+                source: 'embedding',
+                score: match.similarity ?? null,
+              };
+            }
+          }
+        } catch (matchError) {
+          console.warn('Unable to fetch embedding match for label:', label, matchError);
+        }
+      })
+    );
+
+    return suggestions;
+  } catch (error) {
+    console.warn('Unable to compute embedding suggestions:', error);
+    return {};
+  }
+}
+
 function ensureClient() {
   if (!openaiClient) {
     const error = new Error('OpenAI API key is not configured.');
@@ -430,28 +787,54 @@ async function extractTextFromFile(buffer, filename) {
   return text;
 }
 
-async function performOcrFallback(fileBase64) {
+async function performOcrFallback(fileBase64, filename = 'pnl.pdf') {
   ensureClient();
 
-  const response = await openaiClient.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are an OCR assistant for financial statements. Extract all legible text clearly and accurately.',
+  try {
+    const buffer = Buffer.from(fileBase64, 'base64');
+    const uploaded = await openaiClient.files.create({
+      file: {
+        content: buffer,
+        filename,
       },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Extract text from this P&L PDF document:' },
-          { type: 'image_url', image_url: `data:application/pdf;base64,${fileBase64}` },
-        ],
-      },
-    ],
-  });
+      purpose: 'vision',
+    });
 
-  return response.choices?.[0]?.message?.content || '';
+    const response = await openaiClient.responses.create({
+      model: 'gpt-4o',
+      input: [
+        {
+          role: 'system',
+          content: [
+            {
+              type: 'input_text',
+              text: 'You are an OCR assistant that extracts all text from financial statements in correct order.',
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Extract text from all pages of this PDF.' },
+            { type: 'input_file', file_id: uploaded.id },
+          ],
+        },
+      ],
+    });
+
+    const output = response.output_text?.trim() || response.output?.[0]?.content?.[0]?.text?.trim();
+
+    try {
+      await openaiClient.files.del(uploaded.id);
+    } catch (cleanupError) {
+      console.warn('Unable to clean up OCR file:', cleanupError);
+    }
+
+    return output || '';
+  } catch (error) {
+    console.warn('OCR fallback failed:', error);
+    return '';
+  }
 }
 
 export default async function handler(req, res) {
@@ -462,6 +845,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    const startTime = Date.now();
     const { file, filename } = req.body || {};
     if (!file || !filename) {
       res.status(400).json({ success: false, error: 'Missing file payload.' });
@@ -472,7 +856,7 @@ export default async function handler(req, res) {
     let text = await extractTextFromFile(buffer, filename);
 
     if (!text || text.length < 200) {
-      text = await performOcrFallback(file);
+      text = await performOcrFallback(file, filename);
     }
 
     if (!text || text.length === 0) {
@@ -484,94 +868,90 @@ export default async function handler(req, res) {
 
     if (text.split('\n').length < 5) {
       console.warn('⚠️ Detected short or malformed P&L text, forcing OCR fallback');
-      const ocrText = await performOcrFallback(file);
+      const ocrText = await performOcrFallback(file, filename);
       if (ocrText && ocrText.length > 0) {
         text = normalizeText(ocrText);
       }
     }
 
     const fallbackRows = extractFallbackRows(text);
-
-    if (fallbackRows.length > 10) {
-      console.log('✅ Using fallback extraction, skipping OpenAI call');
-      const parsed = buildFallbackResult(fallbackRows);
-      const payload = buildResponsePayload(parsed, text);
-
-      const metadata = {
-        income_items: payload.income.individual_items.length,
-        expense_items: payload.expense.individual_items.length,
-        source_filename: filename,
-        extraction_strategy: 'fallback-regex',
-      };
-
-      if (supabase) {
-        try {
-          await supabase.from('parsed_pnls').insert({
-            filename,
-            parsed_json: payload,
-            metadata,
-            parsed_at: new Date().toISOString(),
-            model_used: 'fallback-regex',
-          });
-        } catch (storageError) {
-          console.error('Unable to persist parsed P&L payload:', storageError);
-        }
-      } else {
-        console.warn('Supabase client not available; skipping parsed P&L persistence.');
-      }
-
-      res.status(200).json({ success: true, data: payload, metadata });
-      return;
-    }
-
+    const structuredResult = await callStructuredExtraction(text);
     const parsed = parsePnlText(text);
 
-    if (
-      Object.keys(parsed.income.individual_items).length === 0 &&
-      Object.keys(parsed.expense.individual_items).length === 0 &&
-      Object.keys(parsed.other_expense.individual_items).length === 0
-    ) {
-      if (fallbackRows.length > 0) {
-        console.warn('⚠️ Structured parser returned no rows; using fallback extraction instead.');
-        const fallbackParsed = buildFallbackResult(fallbackRows);
-        const payload = buildResponsePayload(fallbackParsed, text);
-        const metadata = {
-          income_items: payload.income.individual_items.length,
-          expense_items: payload.expense.individual_items.length,
-          source_filename: filename,
-          extraction_strategy: 'fallback-regex',
-        };
+    let merged = parsed;
+    let extractionStrategy = 'rule-parser';
+    let modelUsed = 'rule-parser';
+    let modelConfidence = 0.65;
 
-        if (supabase) {
-          try {
-            await supabase.from('parsed_pnls').insert({
-              filename,
-              parsed_json: payload,
-              metadata,
-              parsed_at: new Date().toISOString(),
-              model_used: 'fallback-regex',
-            });
-          } catch (storageError) {
-            console.error('Unable to persist parsed P&L payload:', storageError);
-          }
+    const structuredCount = countLineItems(structuredResult);
+    const ruleCount = countLineItems(parsed);
+
+    if (structuredResult && structuredCount > 0) {
+      merged = mergeParsedResults(parsed, structuredResult);
+      extractionStrategy = 'structured-hybrid';
+      modelUsed = 'gpt-4.1-mini + rules';
+      modelConfidence = 0.85;
+    }
+
+    if ((!merged || countLineItems(merged) === 0) && structuredResult) {
+      merged = structuredResult;
+    }
+
+    let fallbackCount = 0;
+    if (fallbackRows.length > 0) {
+      const fallbackParsed = buildFallbackResult(fallbackRows);
+      fallbackCount = countLineItems(fallbackParsed);
+      if (fallbackCount > 0) {
+        merged = mergeParsedResults(merged, fallbackParsed);
+        if (extractionStrategy === 'rule-parser' && fallbackRows.length > 10) {
+          extractionStrategy = 'fallback-regex';
+          modelUsed = 'fallback-regex';
+          modelConfidence = 0.6;
         } else {
-          console.warn('Supabase client not available; skipping parsed P&L persistence.');
+          modelConfidence = Math.max(modelConfidence, 0.7);
         }
-
-        res.status(200).json({ success: true, data: payload, metadata });
-        return;
       }
+    }
 
+    if (!merged || countLineItems(merged) === 0) {
       res.status(422).json({ success: false, error: 'No valid P&L line items detected.' });
       return;
     }
 
-    const payload = buildResponsePayload(parsed, text);
+    const { payload, categorySuggestions, annotated } = buildResponsePayload(merged, text);
+
+    const embeddingLabels = [...annotated.income, ...annotated.expense].map((entry) => entry.label);
+    const embeddingSuggestions = await fetchEmbeddingSuggestions(embeddingLabels);
+
+    const combinedSuggestions = { ...categorySuggestions, ...embeddingSuggestions };
+    const finalUnmapped = [];
+
+    for (const entry of [...annotated.income, ...annotated.expense]) {
+      const key = normaliseLabelKey(entry.label);
+      if (!combinedSuggestions[key]) {
+        finalUnmapped.push(entry.label);
+      }
+    }
+
+    payload.category_suggestions = combinedSuggestions;
+    payload.unmapped = Array.from(new Set(finalUnmapped));
+
+    const parseDuration = Date.now() - startTime;
+    const confidenceScore = Number(modelConfidence.toFixed(2));
 
     const metadata = {
       income_items: payload.income.individual_items.length,
       expense_items: payload.expense.individual_items.length,
       source_filename: filename,
+      parse_time_ms: parseDuration,
+      file_length: text.length,
+      extraction_strategy: extractionStrategy,
+      confidence_score: confidenceScore,
+      structured_rows: structuredCount,
+      rule_rows: ruleCount,
+      fallback_rows: fallbackCount,
+      category_suggestions: combinedSuggestions,
+      unmapped_count: payload.unmapped.length,
     };
 
     if (supabase) {
@@ -581,7 +961,11 @@ export default async function handler(req, res) {
           parsed_json: payload,
           metadata,
           parsed_at: new Date().toISOString(),
-          model_used: 'gpt-4.1-mini',
+          model_used: modelUsed,
+          version: 2,
+          raw_text: text,
+          model_confidence: confidenceScore,
+          ai_extraction: structuredResult,
         });
       } catch (storageError) {
         console.error('Unable to persist parsed P&L payload:', storageError);

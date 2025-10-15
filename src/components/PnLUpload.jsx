@@ -256,17 +256,23 @@ const PnLUpload = ({
     return cacheRef.current[cacheKey] || null;
   }, []);
 
-  const handleSetRows = useCallback((section, items) => {
+  const handleSetRows = useCallback((section, items, suggestions = {}) => {
     const nextRows = items.map((item, index) => {
       const rowId = buildRowId(section, index, item.label);
       const cached = applyCachedMapping(section, item.label);
+      const suggestionKey = item.label ? item.label.toLowerCase() : '';
+      const suggestion = suggestions[suggestionKey];
+      const suggestedCategory = suggestion?.category;
       return {
         id: rowId,
         section,
         originalLabel: item.label,
         customLabel: cached?.customLabel || item.label,
-        mappedCategory: cached?.mappedCategory || UNMAPPED_OPTION,
+        mappedCategory:
+          cached?.mappedCategory ||
+          (suggestedCategory ? suggestedCategory : UNMAPPED_OPTION),
         amount: item.amount,
+        suggestionSource: suggestion?.source || null,
       };
     });
 
@@ -319,7 +325,7 @@ const PnLUpload = ({
           throw new Error(error);
         }
 
-        const { data } = payload;
+        const { data, metadata } = payload;
         if (!data?.income || !data?.expense) {
           throw new Error('Parser did not return income and expense data.');
         }
@@ -331,8 +337,10 @@ const PnLUpload = ({
           ? data.expense.individual_items
           : [];
 
-        handleSetRows('income', incomeItems);
-        handleSetRows('expense', expenseItems);
+        const suggestionSource = data.category_suggestions || metadata?.category_suggestions || {};
+
+        handleSetRows('income', incomeItems, suggestionSource);
+        handleSetRows('expense', expenseItems, suggestionSource);
         setTotals({
           totalIncome: Number(data.income.total_income) || 0,
           totalExpenses: Number(data.expense.total_expense) || 0,
@@ -406,7 +414,35 @@ const PnLUpload = ({
     };
   }, [expenseRows, incomeRows]);
 
-  const applyMapping = useCallback(() => {
+  const persistTrainingExamples = useCallback(async (rows) => {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return;
+    }
+
+    const examples = rows
+      .filter((row) => row && row.mappedCategory && row.mappedCategory !== UNMAPPED_OPTION)
+      .map((row) => ({
+        label: row.originalLabel,
+        category: row.mappedCategory,
+        section: row.section,
+      }));
+
+    if (examples.length === 0) {
+      return;
+    }
+
+    try {
+      await fetch('/api/pnl-training', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ examples }),
+      });
+    } catch (error) {
+      console.warn('Unable to store P&L training examples:', error);
+    }
+  }, []);
+
+  const applyMapping = useCallback(async () => {
     const payloadRows = [...incomeRows, ...expenseRows];
 
     const nextCache = { ...cacheRef.current };
@@ -469,7 +505,8 @@ const PnLUpload = ({
     showToast({ message: '✅ All P&L items imported as editable lines', tone: 'success' });
     setModalOpen(false);
     setCompletionMessage('');
-  }, [expenseRows, incomeRows, onApplyMapping, showToast, stats, totals]);
+    persistTrainingExamples(payloadRows);
+  }, [expenseRows, incomeRows, onApplyMapping, persistTrainingExamples, showToast, stats, totals]);
 
   const handleExport = useCallback(() => {
     exportAsJson([...incomeRows, ...expenseRows]);
@@ -686,7 +723,9 @@ const PnLUpload = ({
                 </button>
                 <button
                   className="px-6 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
-                  onClick={applyMapping}
+                  onClick={() => {
+                    void applyMapping();
+                  }}
                 >
                   Accept Mapping
                 </button>
