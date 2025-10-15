@@ -40,7 +40,7 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
         {
           role: 'system',
           content:
-            'You are a financial document parser. Extract structured Profit & Loss data from the attached PDF. Return valid JSON with the following structure: { income: [{label, amount}], expenses: [{label, amount}], net_income: number }. Ignore monthly columns and extract only the total annual amount for each line item.',
+            'You are a structured data extractor for Profit & Loss statements. Your ONLY output must be valid JSON following this exact schema: { income: [{ label: string, amount: number }], expenses: [{ label: string, amount: number }], net_income: number }. - Always include all three top-level keys: income, expenses, and net_income. - Parse the attached PDF carefully for totals or inferred categories. - Do not include explanations, text, or markdown — only valid JSON.',
         },
         {
           role: 'user',
@@ -63,7 +63,12 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
       throw new Error('No structured content returned from OpenAI.');
     }
 
-    return JSON.parse(content);
+    const parsed = JSON.parse(content);
+    if (!parsed?.income || !parsed?.expenses) {
+      throw new Error('Parser did not return income and expense data.');
+    }
+
+    return parsed;
   } finally {
     if (typeof stream.close === 'function') {
       stream.close();
