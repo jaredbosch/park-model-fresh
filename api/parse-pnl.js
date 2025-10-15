@@ -31,7 +31,6 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
     fileUpload = await openaiClient.files.create({
       file: stream,
       purpose: 'assistants',
-      filename: filename,
     });
 
     // Ask GPT-4o to extract structured data
