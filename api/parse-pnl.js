@@ -1,59 +1,35 @@
 import OpenAI from 'openai';
 import pdfParse from 'pdf-parse';
+import { createClient } from '@supabase/supabase-js';
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
-const SYSTEM = `
-You extract profit and loss statements from text. Return STRICT JSON ONLY, no prose.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase =
+  supabaseUrl && supabaseServiceRoleKey
+    ? createClient(supabaseUrl, supabaseServiceRoleKey)
+    : null;
 
-Absolutely do not infer or fabricate fields. If a field is missing in the source, omit it.
+const MONTH_HEADERS = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)$/i;
 
-Some communities label income and expense lines inconsistently. Preserve the original labels when returning results.
+const SUMMARY_TERMS = /(total|subtotal|grand|net)/i;
+const SUMMARY_COLUMN = /^(ytd|total|grand\s+total)$/i;
 
-JSON must match the provided schema exactly.
+function isMonthColumn(text) {
+  if (!text) {
+    return false;
+  }
+  return MONTH_HEADERS.test(text.trim().slice(0, 3));
+}
 
-Income and expense line items must use the amounts shown in the source. Do not sum or derive new totals beyond what is present in the document.
-`;
-
-const JSON_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    income: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        total_income: { type: 'number' },
-        individual_items: {
-          type: 'object',
-          additionalProperties: { type: 'number' },
-        },
-      },
-      required: ['total_income'],
-    },
-    expense: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        total_expense: { type: 'number' },
-        individual_items: {
-          type: 'object',
-          additionalProperties: { type: 'number' },
-        },
-      },
-      required: ['total_expense'],
-    },
-    net_income: { type: 'number' },
-  },
-  required: ['income', 'expense', 'net_income'],
-};
-
-const UNMAPPED_TOTAL_KEYS = new Set(['total', 'totals', 'grand total', 'net income', 'net']);
-
-const MAX_CHARS_PER_CHUNK = 9000;
-
-const MONTH_TOKEN_REGEX = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s|[-\/\'’])?\d{0,4}$/i;
+function isMonthLabel(text) {
+  if (!text) {
+    return false;
+  }
+  return MONTH_HEADERS.test(text.trim().slice(0, 3));
+}
 
 function parseDelimitedRow(line) {
   if (!line) {
@@ -65,16 +41,22 @@ function parseDelimitedRow(line) {
     return [];
   }
 
-  if (trimmed.includes(',')) {
+  if (trimmed.includes('\t')) {
     return trimmed
-      .split(',')
+      .split(/\t+/)
       .map((cell) => cell.trim())
       .filter((cell) => cell.length > 0);
   }
 
-  const tabSplit = trimmed.split(/\t+/);
-  if (tabSplit.length > 1) {
-    return tabSplit.map((cell) => cell.trim()).filter((cell) => cell.length > 0);
+  if (trimmed.includes(',')) {
+    const commaSplit = trimmed
+      .split(',')
+      .map((cell) => cell.trim())
+      .filter((cell) => cell.length > 0);
+
+    if (commaSplit.length > 1) {
+      return commaSplit;
+    }
   }
 
   const spaceSplit = trimmed.split(/\s{2,}/);
@@ -83,28 +65,6 @@ function parseDelimitedRow(line) {
   }
 
   return [trimmed];
-}
-
-function isMonthToken(token) {
-  if (!token) {
-    return false;
-  }
-  return MONTH_TOKEN_REGEX.test(token.trim());
-}
-
-function isMonthlyHeader(cells) {
-  if (!cells || cells.length < 3) {
-    return false;
-  }
-
-  let monthCount = 0;
-  for (let index = 1; index < cells.length; index += 1) {
-    if (isMonthToken(cells[index])) {
-      monthCount += 1;
-    }
-  }
-
-  return monthCount >= 3;
 }
 
 function parseNumericValue(cell) {
@@ -119,16 +79,16 @@ function parseNumericValue(cell) {
 
   const hasParens = trimmed.includes('(') && trimmed.includes(')');
   const hasTrailingMinus = trimmed.endsWith('-');
-  const sanitized = trimmed
+  const sanitised = trimmed
     .replace(/\((.*)\)/, '$1')
     .replace(/[^0-9.,-]/g, '')
     .replace(/,/g, '');
 
-  if (!sanitized) {
+  if (!sanitised) {
     return null;
   }
 
-  const value = Number.parseFloat(sanitized);
+  const value = Number.parseFloat(sanitised);
   if (!Number.isFinite(value)) {
     return null;
   }
@@ -140,66 +100,174 @@ function parseNumericValue(cell) {
   return value;
 }
 
-function collapseMonthlyRecapTables(text) {
+function sanitiseLabel(raw = '') {
+  return raw.replace(/\s+/g, ' ').replace(/[:\-]+$/, '').trim();
+}
+
+function determineCategory(label) {
+  if (/^4\d{3}/.test(label)) {
+    return 'income';
+  }
+  if (/^6\d{3}/.test(label)) {
+    return 'expense';
+  }
+  if (/^7\d{3}/.test(label)) {
+    return 'other_expense';
+  }
+  return 'other_expense';
+}
+
+function extractLabelAndAmount(cells, originalLine, monthlyMode) {
+  if (!cells || cells.length === 0) {
+    return null;
+  }
+
+  if (monthlyMode) {
+    const label = cells[0];
+    if (!label || isMonthLabel(label)) {
+      return null;
+    }
+
+    for (let index = cells.length - 1; index >= 1; index -= 1) {
+      const numeric = parseNumericValue(cells[index]);
+      if (Number.isFinite(numeric)) {
+        return { label, value: numeric };
+      }
+    }
+
+    return null;
+  }
+
+  for (let index = cells.length - 1; index >= 0; index -= 1) {
+    const numeric = parseNumericValue(cells[index]);
+    if (Number.isFinite(numeric)) {
+      const labelParts = cells.slice(0, index);
+      let label = labelParts.join(' ').trim();
+
+      if (!label && originalLine) {
+        const numericText = cells[index];
+        const numericPosition = originalLine.lastIndexOf(numericText);
+        if (numericPosition !== -1) {
+          label = originalLine.slice(0, numericPosition).trim();
+        }
+      }
+
+      if (!label) {
+        continue;
+      }
+
+      return { label, value: numeric };
+    }
+  }
+
+  if (originalLine) {
+    const match = originalLine.match(/^(.+?)[\s:\-]+(-?\$?[0-9][0-9,\.\-\(\)]*)$/);
+    if (match) {
+      const value = parseNumericValue(match[2]);
+      if (Number.isFinite(value)) {
+        return { label: match[1], value };
+      }
+    }
+  }
+
+  return null;
+}
+
+function parsePnlText(text) {
+  const result = {
+    income: {
+      individual_items: {},
+      total_income: 0,
+    },
+    expense: {
+      individual_items: {},
+      total_expense: 0,
+    },
+    other_expense: {
+      individual_items: {},
+      total_other_expense: 0,
+    },
+    net_income: 0,
+  };
+
   if (!text) {
-    return text;
+    return result;
   }
 
   const lines = text.split(/\r?\n/);
-  const output = [];
+  let inMonthlyTable = false;
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const row = parseDelimitedRow(line);
-
-    if (row && row.length >= 3 && isMonthlyHeader(row)) {
-      // skip header row, process following account lines until break condition
-      while (index + 1 < lines.length) {
-        const nextLine = lines[index + 1];
-        const nextRow = parseDelimitedRow(nextLine);
-
-        if (!nextLine.trim()) {
-          index += 1;
-          output.push('');
-          break;
-        }
-
-        if (!nextRow || nextRow.length < 2 || isMonthlyHeader(nextRow)) {
-          break;
-        }
-
-        const label = nextRow[0]?.trim();
-        if (!label || isMonthToken(label)) {
-          index += 1;
-          continue;
-        }
-
-        let amount = null;
-        for (let cellIndex = nextRow.length - 1; cellIndex >= 1; cellIndex -= 1) {
-          const numeric = parseNumericValue(nextRow[cellIndex]);
-          if (Number.isFinite(numeric)) {
-            amount = numeric;
-            break;
-          }
-        }
-
-        if (!Number.isFinite(amount)) {
-          index += 1;
-          continue;
-        }
-
-        const amountString = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
-        output.push(`${label}: ${amountString}`);
-        index += 1;
-      }
-
+  for (const line of lines) {
+    if (!line || !line.trim()) {
+      inMonthlyTable = false;
       continue;
     }
 
-    output.push(line);
+    const row = parseDelimitedRow(line);
+    if (!row || row.length === 0) {
+      inMonthlyTable = false;
+      continue;
+    }
+
+    const trimmedCells = row.map((cell) => cell.trim()).filter((cell) => cell.length > 0);
+    if (trimmedCells.length === 0) {
+      inMonthlyTable = false;
+      continue;
+    }
+
+    const monthColumnCount = trimmedCells.slice(1).filter((cell) => isMonthColumn(cell)).length;
+    const hasSummaryColumn = trimmedCells.slice(1).some((cell) => SUMMARY_COLUMN.test(cell.trim()));
+    if (monthColumnCount >= 3 || (monthColumnCount >= 1 && hasSummaryColumn)) {
+      inMonthlyTable = true;
+      continue;
+    }
+
+    const extracted = extractLabelAndAmount(trimmedCells, line, inMonthlyTable);
+    if (!extracted) {
+      if (inMonthlyTable && trimmedCells.length <= 1) {
+        inMonthlyTable = false;
+      }
+      continue;
+    }
+
+    let { label, value } = extracted;
+    label = sanitiseLabel(label);
+
+    if (!label || !Number.isFinite(value)) {
+      continue;
+    }
+
+    if (isMonthLabel(label)) {
+      continue;
+    }
+
+    const hasAccountNumber = /^\d{4}/.test(label);
+    if (!hasAccountNumber && SUMMARY_TERMS.test(label)) {
+      continue;
+    }
+
+    const category = determineCategory(label);
+    result[category].individual_items[label] =
+      (result[category].individual_items[label] || 0) + value;
   }
 
-  return output.join('\n');
+  const categoryTotals = {
+    income: 'total_income',
+    expense: 'total_expense',
+    other_expense: 'total_other_expense',
+  };
+
+  for (const [category, totalKey] of Object.entries(categoryTotals)) {
+    const values = Object.values(result[category].individual_items);
+    result[category][totalKey] = values.reduce((sum, amount) => sum + amount, 0);
+  }
+
+  result.net_income =
+    result.income.total_income -
+    result.expense.total_expense -
+    result.other_expense.total_other_expense;
+
+  return result;
 }
 
 function ensureClient() {
@@ -216,8 +284,8 @@ async function extractTextFromFile(buffer, filename) {
     try {
       const parsed = await pdfParse(buffer);
       text = parsed.text ? parsed.text.trim() : '';
-    } catch (err) {
-      console.warn('Unable to parse PDF text, falling back to OCR:', err);
+    } catch (error) {
+      console.warn('Unable to parse PDF text, falling back to OCR:', error);
     }
   } else {
     text = buffer.toString('utf-8');
@@ -249,161 +317,6 @@ async function performOcrFallback(fileBase64) {
   return response.choices?.[0]?.message?.content || '';
 }
 
-function splitIntoChunks(text) {
-  if (!text) {
-    return [];
-  }
-
-  const chunks = [];
-  for (let index = 0; index < text.length; index += MAX_CHARS_PER_CHUNK) {
-    chunks.push(text.slice(index, index + MAX_CHARS_PER_CHUNK));
-  }
-  return chunks;
-}
-
-async function parseChunk(chunk) {
-  ensureClient();
-
-  const prompt = `Extract rows from this P&L statement text. Return JSON that conforms to the following schema:\n${JSON.stringify(
-    JSON_SCHEMA
-  )}\n\nText:\n${chunk}`;
-
-  const response = await openaiClient.responses.create({
-    model: 'gpt-4.1-mini',
-    input: [
-      {
-        role: 'system',
-        content: [
-          {
-            type: 'input_text',
-            text: SYSTEM,
-          },
-        ],
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: prompt,
-          },
-        ],
-      },
-    ],
-    text: {
-      format: {
-        name: 'PnLExtraction',
-        type: 'json_schema',
-        schema: JSON_SCHEMA,
-      },
-    },
-  });
-
-  const outputText = response.output?.[0]?.content?.[0]?.text || '';
-
-  if (!outputText) {
-    throw new Error('Unexpected response format from OpenAI for P&L parsing.');
-  }
-
-  try {
-    return JSON.parse(outputText);
-  } catch (err) {
-    console.error('Unable to parse OpenAI P&L JSON:', err);
-    return null;
-  }
-}
-
-function mergeChunkResults(results) {
-  const merged = {
-    income: {
-      individual_items: {},
-      total_income: 0,
-    },
-    expense: {
-      individual_items: {},
-      total_expense: 0,
-    },
-    net_income: null,
-  };
-
-  results.forEach((result) => {
-    if (!result || typeof result !== 'object') {
-      return;
-    }
-
-    const incomeItems = result.income?.individual_items || {};
-    Object.entries(incomeItems).forEach(([label, value]) => {
-      const trimmedLabel = label?.trim();
-      const numericValue = Number(value);
-      if (!trimmedLabel || !Number.isFinite(numericValue)) {
-        return;
-      }
-      if (UNMAPPED_TOTAL_KEYS.has(trimmedLabel.toLowerCase())) {
-        return;
-      }
-      merged.income.individual_items[trimmedLabel] = (merged.income.individual_items[trimmedLabel] || 0) + numericValue;
-    });
-
-    const expenseItems = result.expense?.individual_items || {};
-    Object.entries(expenseItems).forEach(([label, value]) => {
-      const trimmedLabel = label?.trim();
-      const numericValue = Number(value);
-      if (!trimmedLabel || !Number.isFinite(numericValue)) {
-        return;
-      }
-      if (UNMAPPED_TOTAL_KEYS.has(trimmedLabel.toLowerCase())) {
-        return;
-      }
-      merged.expense.individual_items[trimmedLabel] = (merged.expense.individual_items[trimmedLabel] || 0) + numericValue;
-    });
-
-    if (Number.isFinite(Number(result.income?.total_income))) {
-      merged.income.total_income += Number(result.income.total_income);
-    }
-    if (Number.isFinite(Number(result.expense?.total_expense))) {
-      merged.expense.total_expense += Number(result.expense.total_expense);
-    }
-    if (Number.isFinite(Number(result.net_income))) {
-      merged.net_income = Number(result.net_income);
-    }
-  });
-
-  const incomeValues = Object.values(merged.income.individual_items);
-  const expenseValues = Object.values(merged.expense.individual_items);
-
-  if (!merged.income.total_income && incomeValues.length > 0) {
-    merged.income.total_income = incomeValues.reduce((sum, value) => sum + value, 0);
-  }
-  if (!merged.expense.total_expense && expenseValues.length > 0) {
-    merged.expense.total_expense = expenseValues.reduce((sum, value) => sum + value, 0);
-  }
-  if (merged.net_income === null && incomeValues.length > 0 && expenseValues.length > 0) {
-    merged.net_income = merged.income.total_income - merged.expense.total_expense;
-  }
-
-  return merged;
-}
-
-function sortItemsDescending(items) {
-  return items
-    .slice()
-    .sort((a, b) => {
-      if (b.amount === a.amount) {
-        return a.label.localeCompare(b.label);
-      }
-      return b.amount - a.amount;
-    });
-}
-
-function normaliseItems(rawItems = {}) {
-  return Object.entries(rawItems)
-    .map(([label, value]) => ({
-      label: label.trim(),
-      amount: Number(value),
-    }))
-    .filter((item) => item.label && Number.isFinite(item.amount));
-}
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
@@ -425,43 +338,46 @@ export default async function handler(req, res) {
       text = await performOcrFallback(file);
     }
 
-    text = collapseMonthlyRecapTables(text);
-
     if (!text || text.length === 0) {
       res.status(422).json({ success: false, error: 'Unable to extract text from document.' });
       return;
     }
 
-    const chunks = splitIntoChunks(text);
-    if (chunks.length === 0) {
-      res.status(422).json({ success: false, error: 'No readable text found in document.' });
+    const parsed = parsePnlText(text);
+
+    const incomeCount = Object.keys(parsed.income.individual_items).length;
+    const expenseCount = Object.keys(parsed.expense.individual_items).length;
+    const otherExpenseCount = Object.keys(parsed.other_expense.individual_items).length;
+
+    if (incomeCount === 0 && expenseCount === 0 && otherExpenseCount === 0) {
+      res.status(422).json({ success: false, error: 'No valid P&L line items detected.' });
       return;
     }
 
-    const parsedChunks = await Promise.all(chunks.map((chunk) => parseChunk(chunk)));
-    const hasValidChunk = parsedChunks.some((result) => result && typeof result === 'object');
-    if (!hasValidChunk) {
-      throw new Error('Failed to parse AI response for P&L document.');
-    }
-
-    const merged = mergeChunkResults(parsedChunks);
-
-    const incomeItems = sortItemsDescending(normaliseItems(merged.income.individual_items));
-    const expenseItems = sortItemsDescending(normaliseItems(merged.expense.individual_items));
-
-    const payload = {
-      income: {
-        total_income: merged.income.total_income || 0,
-        individual_items: incomeItems,
-      },
-      expense: {
-        total_expense: merged.expense.total_expense || 0,
-        individual_items: expenseItems,
-      },
-      net_income: Number.isFinite(merged.net_income) ? merged.net_income : merged.income.total_income - merged.expense.total_expense,
+    const metadata = {
+      income_items: incomeCount,
+      expense_items: expenseCount,
+      other_expense_items: otherExpenseCount,
+      source_filename: filename,
     };
 
-    res.status(200).json({ success: true, data: payload });
+    if (supabase) {
+      try {
+        await supabase.from('parsed_pnls').insert({
+          filename,
+          parsed_json: parsed,
+          metadata,
+          parsed_at: new Date().toISOString(),
+          model_used: 'gpt-4.1-mini',
+        });
+      } catch (storageError) {
+        console.error('Unable to persist parsed P&L payload:', storageError);
+      }
+    } else {
+      console.warn('Supabase client not available; skipping parsed P&L persistence.');
+    }
+
+    res.status(200).json({ success: true, data: parsed, metadata });
   } catch (error) {
     console.error('Error parsing P&L:', error);
     const statusCode = error?.statusCode || 500;
