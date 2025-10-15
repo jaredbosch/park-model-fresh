@@ -101,6 +101,38 @@ function createUniqueId(prefix = 'pnl-line') {
   return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 }
 
+function groupItemsByMapping(items, mapping) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [];
+  }
+
+  const grouped = {};
+  items.forEach((item) => {
+    if (!item || typeof item !== 'object') {
+      return;
+    }
+    const rawLabel = typeof item.label === 'string' ? item.label.trim() : '';
+    if (!rawLabel) {
+      return;
+    }
+    const numericAmount = Number(item.amount);
+    if (!Number.isFinite(numericAmount)) {
+      return;
+    }
+
+    const lowerKey = rawLabel.toLowerCase();
+    const mappedLabel =
+      (mapping && (mapping[rawLabel] || mapping[lowerKey])) || rawLabel;
+
+    if (!grouped[mappedLabel]) {
+      grouped[mappedLabel] = 0;
+    }
+    grouped[mappedLabel] += numericAmount;
+  });
+
+  return Object.entries(grouped).map(([label, amount]) => ({ label, amount }));
+}
+
 const ProgressBar = ({ progress, label, fading, showNotice }) => (
   <div className={`mt-3 w-full transition-opacity ${fading ? 'opacity-0' : 'opacity-100'}`}>
     <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
@@ -339,26 +371,51 @@ const PnLUpload = ({
           throw new Error('Parser did not return income and expense data.');
         }
 
-        const incomeItems = Array.isArray(data.income.individual_items)
-          ? data.income.individual_items
+        const incomeSource = data.income || data.incomes || {};
+        const rawIncomeItems = Array.isArray(incomeSource.individual_items)
+          ? incomeSource.individual_items
           : [];
         const expenseSource = data.expense || data.expenses || {};
-        const expenseItems = Array.isArray(expenseSource.individual_items)
+        const rawExpenseItems = Array.isArray(expenseSource.individual_items)
           ? expenseSource.individual_items
           : [];
 
-        const suggestionSource = data.category_suggestions || metadata?.category_suggestions || {};
+        const suggestionSource =
+          data.category_suggestions || metadata?.category_suggestions || {};
+        const suggestionMapping = {};
+        Object.entries(suggestionSource).forEach(([label, meta]) => {
+          if (!label || !meta?.category) {
+            return;
+          }
+          suggestionMapping[label] = meta.category;
+          suggestionMapping[label.toLowerCase()] = meta.category;
+        });
 
-        handleSetRows('income', incomeItems, suggestionSource);
-        handleSetRows('expense', expenseItems, suggestionSource);
+        const mappedIncomePreview = groupItemsByMapping(
+          rawIncomeItems,
+          suggestionMapping
+        );
+        const mappedExpensePreview = groupItemsByMapping(
+          rawExpenseItems,
+          suggestionMapping
+        );
+        const totalIncome =
+          mappedIncomePreview.reduce(
+            (sum, item) => sum + (Number(item.amount) || 0),
+            0
+          ) || Number(incomeSource.total_income) || 0;
+        const totalExpenses =
+          mappedExpensePreview.reduce(
+            (sum, item) => sum + (Number(item.amount) || 0),
+            0
+          ) || Number(expenseSource.total_expense) || 0;
+
+        handleSetRows('income', rawIncomeItems, suggestionSource);
+        handleSetRows('expense', rawExpenseItems, suggestionSource);
         setTotals({
-          totalIncome: Number(data.income.total_income) || 0,
-          totalExpenses:
-            Number((data.expense || data.expenses)?.total_expense) || 0,
-          netIncome:
-            Number(data.net_income) ||
-            (Number(data.income.total_income) || 0) -
-              Number((data.expense || data.expenses)?.total_expense || 0),
+          totalIncome,
+          totalExpenses,
+          netIncome: totalIncome - totalExpenses,
         });
 
         completeProgress();
@@ -449,33 +506,10 @@ const PnLUpload = ({
     return mapping;
   }, [expenseRows]);
 
-  const applyMappings = useCallback((items, mapping) => {
-    if (!Array.isArray(items) || items.length === 0) {
-      return [];
-    }
-
-    const grouped = {};
-    items.forEach((item) => {
-      if (!item || typeof item !== 'object') {
-        return;
-      }
-      const rawLabel = typeof item.label === 'string' ? item.label.trim() : '';
-      if (!rawLabel) {
-        return;
-      }
-      const numericAmount = Number(item.amount);
-      if (!Number.isFinite(numericAmount)) {
-        return;
-      }
-      const key = (mapping && mapping[rawLabel]) || rawLabel;
-      if (!grouped[key]) {
-        grouped[key] = 0;
-      }
-      grouped[key] += numericAmount;
-    });
-
-    return Object.entries(grouped).map(([label, amount]) => ({ label, amount }));
-  }, []);
+  const applyMappings = useCallback(
+    (items, mapping) => groupItemsByMapping(items, mapping),
+    []
+  );
 
   const mappedIncomeItems = useMemo(
     () => applyMappings(sourceIncomeItems, incomeMappingLookup),
