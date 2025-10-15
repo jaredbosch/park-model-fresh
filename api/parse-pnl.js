@@ -39,18 +39,8 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
       messages: [
         {
           role: 'system',
-          content: `You are a financial document parser that extracts structured Profit & Loss data from PDFs. \
-Your ONLY output must be valid JSON that exactly matches this schema: \
-{ \
-  income: [{ label: string, amount: number }], \
-  expenses: [{ label: string, amount: number }], \
-  net_income: number \
-}. \
-Guidelines: \
-- Always include all three keys, even if arrays are empty. \
-- Parse total values when possible. \
-- Ignore monthly columns, percentages, or subtotals. \
-- Never include text or explanations — output pure JSON only.`,
+          content: `You are a structured data extractor for Profit & Loss statements.  \
+Parse the attached document and return **valid JSON** with this exact schema:\n\n{\n  "income": {\n    "individual_items": [\n      { "label": string, "amount": number }\n    ],\n    "total_income": number\n  },\n  "expenses": {\n    "individual_items": [\n      { "label": string, "amount": number }\n    ],\n    "total_expense": number\n  },\n  "net_income": number\n}\n\nRules:\n- Always include multiple individual line items for both income and expenses.\n- Ignore monthly breakdowns — extract only total annual or summary figures.\n- Keep labels short and descriptive (e.g. "Rent Income", "Payroll", "Utilities").\n- Round all amounts to nearest whole dollar.\n- Output must be 100% valid JSON, no explanations or markdown.`,
         },
         {
           role: 'user',
