@@ -330,8 +330,9 @@ const PnLUpload = ({
         const incomeItems = Array.isArray(data.income.individual_items)
           ? data.income.individual_items
           : [];
-        const expenseItems = Array.isArray(data.expense.individual_items)
-          ? data.expense.individual_items
+        const expenseSource = data.expense || data.expenses || {};
+        const expenseItems = Array.isArray(expenseSource.individual_items)
+          ? expenseSource.individual_items
           : [];
 
         const suggestionSource = data.category_suggestions || metadata?.category_suggestions || {};
@@ -340,10 +341,12 @@ const PnLUpload = ({
         handleSetRows('expense', expenseItems, suggestionSource);
         setTotals({
           totalIncome: Number(data.income.total_income) || 0,
-          totalExpenses: Number(data.expense.total_expense) || 0,
+          totalExpenses:
+            Number((data.expense || data.expenses)?.total_expense) || 0,
           netIncome:
             Number(data.net_income) ||
-            (Number(data.income.total_income) || 0) - (Number(data.expense.total_expense) || 0),
+            (Number(data.income.total_income) || 0) -
+              Number((data.expense || data.expenses)?.total_expense || 0),
         });
 
         completeProgress();
