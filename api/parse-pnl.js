@@ -39,8 +39,18 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
       messages: [
         {
           role: 'system',
-          content:
-            'You are a structured data extractor for Profit & Loss statements. Your ONLY output must be valid JSON following this exact schema: { income: [{ label: string, amount: number }], expenses: [{ label: string, amount: number }], net_income: number }. - Always include all three top-level keys: income, expenses, and net_income. - Parse the attached PDF carefully for totals or inferred categories. - Do not include explanations, text, or markdown — only valid JSON.',
+          content: `You are a financial document parser that extracts structured Profit & Loss data from PDFs. \
+Your ONLY output must be valid JSON that exactly matches this schema: \
+{ \
+  income: [{ label: string, amount: number }], \
+  expenses: [{ label: string, amount: number }], \
+  net_income: number \
+}. \
+Guidelines: \
+- Always include all three keys, even if arrays are empty. \
+- Parse total values when possible. \
+- Ignore monthly columns, percentages, or subtotals. \
+- Never include text or explanations — output pure JSON only.`,
         },
         {
           role: 'user',
@@ -53,6 +63,8 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
       response_format: { type: 'json_object' },
     });
 
+    console.log('Raw GPT response:', response.choices?.[0]?.message?.content);
+
     let content = response.choices?.[0]?.message?.content;
     if (Array.isArray(content)) {
       const textPart = content.find((part) => typeof part?.text === 'string');
@@ -64,7 +76,13 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
     }
 
     const parsed = JSON.parse(content);
-    if (!parsed?.income || !parsed?.expenses) {
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !('income' in parsed) ||
+      !('expenses' in parsed)
+    ) {
+      console.error('Invalid structured response:', parsed);
       throw new Error('Parser did not return income and expense data.');
     }
 
