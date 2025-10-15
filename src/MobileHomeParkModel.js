@@ -9,22 +9,58 @@ import {
   Percent,
   PieChart,
 } from 'lucide-react';
-import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { supabase } from './lib/supabaseClient';
 import AuthModal from './components/AuthModal';
 import ProfileModal from './components/ProfileModal';
 import { useToast } from './components/ToastProvider';
+import RentRollUpload from './components/RentRollUpload';
+import PnLUpload from './components/PnLUpload';
+
+console.log('Supabase instance:', supabase);
+
+if (!supabase) {
+  console.error('⚠️ Supabase client not initialized yet');
+}
+
+if (typeof window !== 'undefined' && !window.__PARK_MODEL_RUNTIME_GUARD__) {
+  window.__PARK_MODEL_RUNTIME_GUARD__ = true;
+  window.onerror = (msg, src, line, col, err) => {
+    console.error('⚡ Runtime error:', msg, 'at', src, line, col, err);
+  };
+}
+
+const isSupabaseConfigured = Boolean(supabase);
+const UNMAPPED_PNL_LABEL = 'Unmapped (Keep As-Is)';
+
+const createLineItemId = (prefix) => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch (error) {
+    console.warn('Unable to generate crypto UUID:', error);
+  }
+
+  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+};
 
 let globalUser = null;
 
-supabase.auth.onAuthStateChange((_event, session) => {
-  globalUser = session?.user || null;
+if (supabase && typeof supabase.auth !== 'undefined') {
+  supabase.auth.onAuthStateChange((_event, session) => {
+    globalUser = session?.user || null;
 
-  if (globalUser?.email) {
-    console.log(`✅ Supabase connected as ${globalUser.email}`);
-  } else {
-    console.warn('⚠️ No Supabase session found yet');
-  }
-});
+    if (globalUser?.email) {
+      console.log(`✅ Supabase connected as ${globalUser.email}`);
+    } else {
+      console.warn('⚠️ No Supabase session found yet');
+    }
+  });
+} else if (supabase) {
+  console.error('Supabase auth API is unavailable on the current client instance.');
+} else {
+  console.error('Supabase client not initialized');
+}
 
 const normaliseReportState = (state) => {
   if (!state) {
@@ -379,7 +415,10 @@ const generateUniqueLabel = (baseLabel, existingLabels = []) => {
   return candidate;
 };
 const MobileHomeParkModel = () => {
+  console.log('✅ MobileHomeParkModel initialized');
+
   const { showToast } = useToast();
+
   const [session, setSession] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [savedReports, setSavedReports] = useState([]);
@@ -403,10 +442,71 @@ const MobileHomeParkModel = () => {
       occupancyStatus: 'occupied',
     },
   ]);
-  const quickPopulateIdRef = useRef(2);
   const [vacantTargetLots, setVacantTargetLots] = useState('');
-
   const [activeTab, setActiveTab] = useState('rent-roll');
+  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
+  const [profileDefaults, setProfileDefaults] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [units, setUnits] = useState(() => {
+    const buildDefaultUnits = () => {
+      const initialUnits = [];
+      for (let i = 1; i <= 65; i += 1) {
+        initialUnits.push({
+          id: i,
+          lotNumber: i.toString(),
+          tenant: i <= 50 ? 'Occupied' : 'Vacant',
+          rent: 450,
+          occupied: i <= 50,
+        });
+      }
+      return initialUnits;
+    };
+
+    if (typeof window === 'undefined') {
+      return buildDefaultUnits();
+    }
+
+    const stored = localStorage.getItem('rentRollUnits');
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch (error) {
+        console.warn('Failed to parse stored rent roll units:', error);
+      }
+    }
+
+    return buildDefaultUnits();
+  });
+  const [selectedUnits, setSelectedUnits] = useState([]);
+  const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
+  const [savingReport, setSavingReport] = useState(false);
+  const [additionalIncome, setAdditionalIncome] = useState([
+    { id: 1, name: 'Utility Income', amount: 3600 },
+    { id: 2, name: 'Rental Home Income', amount: 12000 },
+    { id: 3, name: 'Late Fees', amount: 1200 },
+  ]);
+  const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
+    INCOME_CATEGORY_OPTIONS[0]
+  );
+  const [useActualIncome, setUseActualIncome] = useState(false);
+  const [actualIncome, setActualIncome] = useState(0);
+  const [expenses, setExpenses] = useState(() => createDefaultExpenses());
+  const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
+    EXPENSE_CATEGORY_OPTIONS[0]
+  );
+  const [managementPercent, setManagementPercent] = useState(5);
+  const [expenseRatio, setExpenseRatio] = useState(0);
+  const [pnlTotals, setPnlTotals] = useState(null);
+  const [pnlMappingStats, setPnlMappingStats] = useState(null);
+  const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
+  const [irrInputs, setIrrInputs] = useState(() => ({ ...DEFAULT_IRR_INPUTS }));
+  const [proformaInputs, setProformaInputs] = useState(() => normaliseProformaInputs());
+  const [projectionYears, setProjectionYears] = useState(5);
+
+  const quickPopulateIdRef = useRef(2);
 
   const formatReportDate = useCallback((value) => {
     if (!value) {
@@ -527,10 +627,6 @@ const MobileHomeParkModel = () => {
     });
   }, []);
 
-  const [contactInfo, setContactInfo] = useState(() => ({ ...DEFAULT_CONTACT_INFO }));
-  const [profileDefaults, setProfileDefaults] = useState(null);
-  const [profileOpen, setProfileOpen] = useState(false);
-
   const handleProfileUpdated = useCallback((defaults) => {
     if (!defaults || typeof defaults !== 'object') {
       setProfileDefaults(null);
@@ -620,47 +716,194 @@ const MobileHomeParkModel = () => {
       }),
     [quickPopulateRows]
   );
-
-  // Rent Roll Inputs
-  const [units, setUnits] = useState(() => {
-    const initialUnits = [];
-    for (let i = 1; i <= 65; i++) {
-      initialUnits.push({
-        id: i,
-        lotNumber: i.toString(),
-        tenant: i <= 50 ? 'Occupied' : 'Vacant',
-        rent: 450,
-        occupied: i <= 50
-      });
-    }
-    return initialUnits;
-  });
-
-  const [selectedUnits, setSelectedUnits] = useState([]);
-
-  const quickPopulatePreview = useMemo(() => {
-    if (!Array.isArray(units) || units.length === 0) {
-      return {
-        totalLots: 0,
-        occupiedLots: 0,
-        averageRent: 0,
-        totalRentIncome: 0,
-      };
-    }
-
-    let occupiedLots = 0;
-    let occupiedRentSum = 0;
-    const occupiedRentValues = [];
-
-    units.forEach((unit) => {
-      if (!unit) {
+  const handleRentRollImport = useCallback(
+    (rows) => {
+      if (!Array.isArray(rows) || rows.length === 0) {
         return;
       }
 
-      const rentValue = Number(unit.rent);
+      setUnits(() =>
+        rows.map((row, index) => {
+          const rawLotNumber = row?.lotNumber;
+          const lotNumber =
+            rawLotNumber !== undefined && rawLotNumber !== null && `${rawLotNumber}`.trim()
+              ? `${rawLotNumber}`.trim()
+              : `${index + 1}`;
 
-      if (unit.occupied) {
-        occupiedLots += 1;
+          const occupied = (() => {
+            if (typeof row?.occupied === 'string') {
+              return /^(true|yes|y|1|occupied)$/i.test(row.occupied.trim());
+            }
+            return Boolean(row?.occupied);
+          })();
+
+          const numericRent = Number(row?.rent);
+          const rent = Number.isFinite(numericRent) ? numericRent : 0;
+
+          const tenantName =
+            typeof row?.tenantName === 'string' && row.tenantName.trim()
+              ? row.tenantName.trim()
+              : occupied
+              ? 'Occupied'
+              : 'Vacant';
+
+          return {
+            id: index + 1,
+            lotNumber,
+            tenant: tenantName,
+            rent,
+            occupied,
+          };
+        })
+      );
+      setSelectedUnits([]);
+      showToast({ message: '📥 Rent roll imported successfully.', tone: 'success' });
+    },
+    [setUnits, setSelectedUnits, showToast]
+  );
+
+  const handlePnLMappingApplied = useCallback(
+    (payload) => {
+      if (!payload || typeof payload !== 'object') {
+        return;
+      }
+
+      const {
+        incomeLines = [],
+        expenseLines = [],
+        totals = null,
+        stats = null,
+        derived = {},
+      } = payload;
+
+      const toArray = (value) => (Array.isArray(value) ? value : []);
+
+      const normaliseLine = (line, section, index) => {
+        const fallbackLabel = `${section === 'income' ? 'Income' : 'Expense'} ${index + 1}`;
+        const rawLabel =
+          line?.customLabel ??
+          line?.label ??
+          line?.name ??
+          line?.originalLabel ??
+          fallbackLabel;
+        const label =
+          typeof rawLabel === 'string' && rawLabel.trim() ? rawLabel.trim() : fallbackLabel;
+        const numericAmount = Number(line?.amount);
+        const amount = Number.isFinite(numericAmount) ? numericAmount : 0;
+        const rawCategory = line?.mappedCategory ?? line?.category;
+        const resolvedCategory =
+          rawCategory && rawCategory !== UNMAPPED_PNL_LABEL
+            ? rawCategory
+            : section === 'income'
+            ? 'Other Income'
+            : 'Other Expense';
+
+        return {
+          id: line?.id || createLineItemId(section),
+          name: label,
+          amount,
+          originalLabel: line?.originalLabel ?? label,
+          category: resolvedCategory,
+          mappedCategory:
+            rawCategory && rawCategory !== UNMAPPED_PNL_LABEL ? rawCategory : null,
+          editable: line?.editable !== false,
+        };
+      };
+
+      const normalisedIncome = toArray(incomeLines).map((line, index) =>
+        normaliseLine(line, 'income', index)
+      );
+      const normalisedExpenses = toArray(expenseLines).map((line, index) =>
+        normaliseLine(line, 'expense', index)
+      );
+
+      const lotRentEntries = normalisedIncome.filter((item) => item.category === 'Lot Rent');
+      const resolvedLotRentTotal = (() => {
+        if (Number.isFinite(Number(derived?.lotRentTotal))) {
+          return Number(derived.lotRentTotal);
+        }
+        return lotRentEntries.reduce((sum, item) => sum + Number(item.amount), 0);
+      })();
+
+      const otherIncomeEntries = normalisedIncome.filter(
+        (item) => item.category !== 'Lot Rent'
+      );
+
+      setAdditionalIncome(otherIncomeEntries);
+      setExpenses(normalisedExpenses);
+
+      if (lotRentEntries.length > 0 && resolvedLotRentTotal > 0) {
+        setUseActualIncome(true);
+        setActualIncome(Math.round(Math.max(resolvedLotRentTotal, 0)));
+      } else {
+        setUseActualIncome(false);
+        setActualIncome(0);
+      }
+
+      try {
+        const nextTotals =
+          totals && typeof totals === 'object'
+            ? {
+                ...totals,
+                lotRentAnnual: Math.round(Math.max(resolvedLotRentTotal, 0)),
+              }
+            : lotRentEntries.length > 0
+            ? { lotRentAnnual: Math.round(Math.max(resolvedLotRentTotal, 0)) }
+            : totals ?? null;
+
+        setPnlTotals(nextTotals);
+        setPnlMappingStats(stats || null);
+
+        showToast({
+          message: '✅ P&L Imported and Mapped Successfully',
+          tone: 'success',
+        });
+      } catch (err) {
+        console.error('❌ Error setting P&L totals:', err);
+        showToast({
+          message: '⚠️ Error processing P&L import',
+          tone: 'error',
+        });
+      }
+    },
+    [
+      setAdditionalIncome,
+      setExpenses,
+      setUseActualIncome,
+      setActualIncome,
+      setPnlTotals,
+      setPnlMappingStats,
+      showToast,
+    ]
+  );
+
+  const defaultPreview = {
+    totalLots: 0,
+    occupiedLots: 0,
+    averageRent: 0,
+    totalRentIncome: 0,
+  };
+
+  const quickPopulatePreview = useMemo(() => {
+    try {
+      if (!Array.isArray(units) || units.length === 0) {
+        return defaultPreview;
+      }
+
+      let occupiedLots = 0;
+      let occupiedRentSum = 0;
+      const occupiedRentValues = [];
+
+      units.forEach((unit) => {
+        if (!unit) {
+          return;
+        }
+
+        const rentValue = Number(unit.rent);
+
+        if (unit.occupied) {
+          occupiedLots += 1;
+        }
 
         if (Number.isFinite(rentValue) && rentValue > 0) {
           occupiedRentValues.push(rentValue);
@@ -668,22 +911,39 @@ const MobileHomeParkModel = () => {
         } else if (Number.isFinite(rentValue)) {
           occupiedRentSum += Math.max(rentValue, 0);
         }
-      }
-    });
+      });
 
-    const averageRent =
-      occupiedRentValues.length > 0
-        ? occupiedRentValues.reduce((sum, value) => sum + value, 0) /
-          occupiedRentValues.length
-        : 0;
+      const totalLots = units.length;
+      const averageRent =
+        occupiedRentValues.length > 0
+          ? Math.round(
+              occupiedRentValues.reduce((a, b) => a + b, 0) /
+                occupiedRentValues.length
+            )
+          : 0;
 
-    return {
-      totalLots: units.length,
-      occupiedLots,
-      averageRent,
-      totalRentIncome: occupiedRentSum * 12,
-    };
+      return {
+        totalLots,
+        occupiedLots,
+        averageRent,
+        totalRentIncome: occupiedRentSum,
+      };
+    } catch (err) {
+      console.error('❌ Error computing quickPopulatePreview:', err);
+      return defaultPreview;
+    }
   }, [units]);
+
+  let quickPopulatePreviewForRender = defaultPreview;
+
+  try {
+    quickPopulatePreviewForRender =
+      quickPopulatePreview && typeof quickPopulatePreview === 'object'
+        ? quickPopulatePreview
+        : defaultPreview;
+  } catch (err) {
+    console.error('❌ Render crash caught:', err);
+  }
 
   const parsedVacantTarget = useMemo(() => {
     const target = parseInt(vacantTargetLots, 10);
@@ -692,41 +952,6 @@ const MobileHomeParkModel = () => {
   const canVacantRemaining = parsedVacantTarget !== null && parsedVacantTarget > units.length;
 
   // Property Information
-  const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
-  const [savingReport, setSavingReport] = useState(false);
-  
-  // Additional Income Inputs
-  const [additionalIncome, setAdditionalIncome] = useState([
-    { id: 1, name: 'Utility Income', amount: 3600 },
-    { id: 2, name: 'Rental Home Income', amount: 12000 },
-    { id: 3, name: 'Late Fees', amount: 1200 },
-  ]);
-  const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
-    INCOME_CATEGORY_OPTIONS[0]
-  );
-
-  const [useActualIncome, setUseActualIncome] = useState(false);
-  const [actualIncome, setActualIncome] = useState(0);
-
-  // Operating Expense Inputs
-  const [expenses, setExpenses] = useState(() => createDefaultExpenses());
-  const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
-    EXPENSE_CATEGORY_OPTIONS[0]
-  );
-
-  const [managementPercent, setManagementPercent] = useState(5);
-  const [expenseRatio, setExpenseRatio] = useState(0);
-
-  // Purchase & Financing Inputs
-  const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
-
-  // IRR Inputs
-  const [irrInputs, setIrrInputs] = useState(() => ({ ...DEFAULT_IRR_INPUTS }));
-
-  // Proforma Inputs
-  const [proformaInputs, setProformaInputs] = useState(() => normaliseProformaInputs());
-  const [projectionYears, setProjectionYears] = useState(5);
-
   const fetchSavedReports = useCallback(
     async ({ sessionOverride, accessToken, userId } = {}) => {
       if (!isSupabaseConfigured || !supabase) {
@@ -1390,6 +1615,18 @@ const MobileHomeParkModel = () => {
         setProformaInputs(normaliseProformaInputs(savedState.proformaInputs));
       }
 
+      if (savedState?.pnlTotals) {
+        setPnlTotals(savedState.pnlTotals);
+      } else {
+        setPnlTotals(null);
+      }
+
+      if (savedState?.pnlMappingStats) {
+        setPnlMappingStats(savedState.pnlMappingStats);
+      } else {
+        setPnlMappingStats(null);
+      }
+
       if (typeof savedState?.projectionYears === 'number') {
         setProjectionYears(savedState.projectionYears);
       } else if (typeof data.projection_years === 'number') {
@@ -1831,15 +2068,19 @@ const MobileHomeParkModel = () => {
   }, []);
 
   const clearIncomeItems = useCallback(() => {
-    setAdditionalIncome((prev) => {
-      if (prev.length === 0) {
-        return prev;
-      }
+    if (additionalIncome.length === 0) {
+      return;
+    }
 
-      const confirmed = window.confirm('Clear all income line items?');
-      return confirmed ? [] : prev;
-    });
-  }, []);
+    const confirmed = window.confirm('Clear all income line items?');
+    if (!confirmed) {
+      return;
+    }
+
+    setAdditionalIncome([]);
+    setPnlTotals(null);
+    setPnlMappingStats(null);
+  }, [additionalIncome.length]);
 
   // Expense Functions
   const addExpenseItem = useCallback(() => {
@@ -1882,15 +2123,17 @@ const MobileHomeParkModel = () => {
   }, []);
 
   const clearExpenseItems = useCallback(() => {
-    setExpenses((prev) => {
-      if (prev.length === 0) {
-        return prev;
-      }
+    if (expenses.length === 0) {
+      return;
+    }
 
-      const confirmed = window.confirm('Clear all expense line items?');
-      return confirmed ? [] : prev;
-    });
-  }, []);
+    const confirmed = window.confirm('Clear all expense line items?');
+    if (!confirmed) {
+      return;
+    }
+
+    setExpenses([]);
+  }, [expenses.length]);
 
   // Calculations
   const calculations = useMemo(() => {
@@ -1918,7 +2161,8 @@ const MobileHomeParkModel = () => {
 
     // Operating Expenses
     const managementFee = effectiveGrossIncome * (managementPercent / 100);
-    const detailedExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
+    const detailedExpenses =
+      expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
     const ratioValue = Number(expenseRatio);
     const expenseRatioPercent = Number.isFinite(ratioValue) ? Math.max(ratioValue, 0) : 0;
     const useExpenseRatioOverride = expenseRatioPercent > 0;
@@ -2215,6 +2459,11 @@ const MobileHomeParkModel = () => {
 
     const proformaYears = calculateProforma();
     const firstYearData = proformaYears[0] || null;
+    const yearSevenData =
+      proformaYears.find((entry) => entry.year === 7) ||
+      (proformaYears.length > 0 ? proformaYears[proformaYears.length - 1] : null);
+    const year7NOI =
+      yearSevenData && Number.isFinite(yearSevenData.noi) ? yearSevenData.noi : noi;
 
     const annualDebtService = firstYearData?.debtService ?? firstYearDebtService;
     const monthlyPayment = firstYearData ? firstYearData.debtService / 12 : firstMonthPayment;
@@ -2229,8 +2478,9 @@ const MobileHomeParkModel = () => {
 
     // IRR Calculation
     const holdPeriod = Number(irrInputs.holdPeriod) || 0;
-    const exitCapRate = irrInputs.exitCapRate / 100;
-    const exitValue = exitCapRate > 0 ? noi / exitCapRate : 0;
+    const exitCapRatePercent = Number(irrInputs.exitCapRate) || 0;
+    const exitValue =
+      exitCapRatePercent > 0 ? year7NOI / (exitCapRatePercent / 100) : 0;
 
     const monthsHeld = Math.round(holdPeriod * 12);
     let remainingBalanceAtExit = loanAmount;
@@ -2244,25 +2494,23 @@ const MobileHomeParkModel = () => {
       }
     }
 
-    const exitProceeds = exitValue - remainingBalanceAtExit;
-    const totalCashInvested = downPayment;
+    const remainingLoanBalance = remainingBalanceAtExit;
+    const netExitProceeds = exitValue - remainingLoanBalance;
+    const initialInvestment = downPayment;
 
-    const calculateIRR = () => {
-      if (holdPeriod <= 0) {
+    const defaultAnnualCashFlow = firstYearData ? firstYearData.cashFlow : cashFlow;
+    const annualCashFlows = [];
+    for (let year = 1; year <= holdPeriod; year += 1) {
+      const yearData =
+        proformaYears.find((entry) => entry.year === year) ||
+        (proformaYears.length > 0 ? proformaYears[Math.min(year - 1, proformaYears.length - 1)] : null);
+      const yearCashFlow = yearData ? yearData.cashFlow : defaultAnnualCashFlow;
+      annualCashFlows.push(yearCashFlow);
+    }
+
+    const calculateIRR = (cashFlows) => {
+      if (!Array.isArray(cashFlows) || cashFlows.length === 0) {
         return 0;
-      }
-
-      const cashFlows = [-totalCashInvested];
-      for (let year = 1; year <= holdPeriod; year += 1) {
-        const index = Math.min(year - 1, proformaYears.length - 1);
-        const yearData = index >= 0 ? proformaYears[index] : null;
-        const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
-
-        if (year < holdPeriod) {
-          cashFlows.push(yearCashFlow);
-        } else {
-          cashFlows.push(yearCashFlow + exitProceeds);
-        }
       }
 
       let rate = 0.1;
@@ -2274,8 +2522,13 @@ const MobileHomeParkModel = () => {
         let dnpv = 0;
 
         for (let j = 0; j < cashFlows.length; j += 1) {
-          npv += cashFlows[j] / Math.pow(1 + rate, j);
-          dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
+          const cashFlowValue = cashFlows[j];
+          npv += cashFlowValue / Math.pow(1 + rate, j);
+          dnpv -= j * cashFlowValue / Math.pow(1 + rate, j + 1);
+        }
+
+        if (dnpv === 0) {
+          return rate * 100;
         }
 
         const newRate = rate - npv / dnpv;
@@ -2294,22 +2547,16 @@ const MobileHomeParkModel = () => {
       return rate * 100;
     };
 
-    const irr = calculateIRR();
+    const irr =
+      holdPeriod > 0
+        ? calculateIRR([-initialInvestment, ...annualCashFlows, netExitProceeds])
+        : 0;
 
-    const distributions = [];
-    for (let year = 1; year <= holdPeriod; year += 1) {
-      const index = Math.min(year - 1, proformaYears.length - 1);
-      const yearData = index >= 0 ? proformaYears[index] : null;
-      const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
-      if (year === holdPeriod) {
-        distributions.push(yearCashFlow + exitProceeds);
-      } else {
-        distributions.push(yearCashFlow);
-      }
-    }
-
-    const totalCashReceived = distributions.reduce((sum, value) => sum + value, 0);
-    const equityMultiple = totalCashInvested > 0 ? totalCashReceived / totalCashInvested : 0;
+    const cumulativeCashFlow = annualCashFlows.reduce((sum, value) => sum + value, 0);
+    const equityMultiple =
+      initialInvestment > 0
+        ? (netExitProceeds + cumulativeCashFlow) / initialInvestment
+        : 0;
 
     return {
       totalUnits,
@@ -2339,8 +2586,8 @@ const MobileHomeParkModel = () => {
       expensePerUnit,
       noiPerUnit,
       exitValue,
-      remainingBalance: remainingBalanceAtExit,
-      exitProceeds,
+      remainingBalance: remainingLoanBalance,
+      exitProceeds: netExitProceeds,
       irr,
       equityMultiple,
       proformaYears,
@@ -2409,8 +2656,6 @@ const MobileHomeParkModel = () => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0
     }).format(value);
   };
 
@@ -2759,6 +3004,8 @@ ${reportContent.innerHTML}
       reportName: effectiveReportName,
       activeTab,
       calculations,
+      pnlTotals,
+      pnlMappingStats,
       ownerUserId: authUser?.id || session?.user?.id || null,
       ownerEmail: sessionEmail || authUser?.email || null,
     };
@@ -2789,6 +3036,8 @@ ${reportContent.innerHTML}
           actualIncome,
           expenseRatio,
           projectionYears,
+          pnlTotals,
+          pnlMappingStats,
           htmlContent: finalHtml,
           userId: authUser?.id,
           reportId: normalizedReportId,
@@ -3015,6 +3264,28 @@ ${reportContent.innerHTML}
       supabase,
     ]
   );
+
+  if (!quickPopulatePreviewForRender || !supabase) {
+    console.warn('⚠️ Supabase client not initialized yet or preview not ready');
+    return (
+      <div
+        style={{
+          color: 'white',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: '100vh',
+          background: '#0a0a0a',
+          flexDirection: 'column',
+        }}
+      >
+        <p>⚙️ Loading Park Model...</p>
+        <p style={{ fontSize: '0.8rem', color: '#aaa' }}>
+          Please wait, initializing data.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6 bg-gray-50">
@@ -3671,25 +3942,25 @@ ${reportContent.innerHTML}
                   </div>
                 </div>
 
-                {quickPopulatePreview.totalLots > 0 && (
+                {quickPopulatePreviewForRender.totalLots > 0 && (
                   <div className="mt-4 rounded-md border border-blue-200 bg-white p-4">
                     <div className="text-sm font-semibold text-blue-900">Preview Summary</div>
                     <div className="mt-2 grid grid-cols-2 gap-3 md:grid-cols-4">
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Total Lots</div>
-                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.totalLots}</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreviewForRender.totalLots}</div>
                       </div>
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Occupied</div>
-                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreview.occupiedLots}</div>
+                        <div className="text-lg font-semibold text-gray-800">{quickPopulatePreviewForRender.occupiedLots}</div>
                       </div>
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Average Rent</div>
-                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.averageRent || 0)}</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreviewForRender.averageRent || 0)}</div>
                       </div>
                       <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Total Rent Income</div>
-                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreview.totalRentIncome || 0)}</div>
+                        <div className="text-lg font-semibold text-gray-800">{formatCurrency(quickPopulatePreviewForRender.totalRentIncome || 0)}</div>
                       </div>
                     </div>
                   </div>
@@ -3699,6 +3970,7 @@ ${reportContent.innerHTML}
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <h2 className="text-2xl font-bold text-gray-800">Rent Roll</h2>
                 <div className="flex flex-wrap items-center gap-4">
+                  <RentRollUpload onDataParsed={handleRentRollImport} />
                   <div className="flex items-end gap-2">
                     <div>
                       <label className="text-xs font-semibold text-gray-700">Add Multiple Lots</label>
@@ -3908,6 +4180,51 @@ ${reportContent.innerHTML}
             <div className="space-y-6">
               <h2 className="text-2xl font-bold text-gray-800">Profit & Loss Statement</h2>
 
+              <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4 shadow-sm">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-indigo-900">Upload &amp; Map P&amp;L</h3>
+                    <p className="text-sm text-indigo-700">
+                      Import a PDF or CSV profit &amp; loss statement to auto-map income and expense line items.
+                    </p>
+                  </div>
+                  <PnLUpload
+                    onApplyMapping={handlePnLMappingApplied}
+                    incomeCategories={INCOME_CATEGORY_OPTIONS}
+                    expenseCategories={EXPENSE_CATEGORY_OPTIONS}
+                  />
+                </div>
+
+                {(pnlMappingStats || pnlTotals) && (
+                  <div className="mt-4 rounded-lg border border-indigo-200 bg-white/80 p-4 text-sm text-indigo-900">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      {pnlMappingStats ? (
+                        <div className="font-semibold text-indigo-900">
+                          {pnlMappingStats.totalMapped} mapped / {pnlMappingStats.totalRows}{' '}
+                          line items • {pnlMappingStats.coverage}% coverage
+                        </div>
+                      ) : (
+                        <div className="font-semibold text-indigo-900">P&amp;L ready for review</div>
+                      )}
+                      {pnlTotals && (
+                        <div className="flex flex-wrap gap-3 text-xs sm:text-sm">
+                          <span>
+                            Total Income {formatCurrency(pnlTotals.totalIncome ?? 0)}
+                          </span>
+                          <span>
+                            Total Expenses {formatCurrency(pnlTotals.totalExpenses ?? 0)}
+                          </span>
+                          <span>Net {formatCurrency(pnlTotals.netIncome ?? 0)}</span>
+                          {Number.isFinite(Number(pnlTotals.lotRentAnnual)) && (
+                            <span>Lot Rent {formatCurrency(pnlTotals.lotRentAnnual)}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="space-y-6">
                 {/* Income Section */}
                 <div className="bg-green-50 p-6 rounded-lg border border-green-200">
@@ -3994,6 +4311,11 @@ ${reportContent.innerHTML}
                     <div className="bg-white p-4 rounded border border-green-200">
                       <div className="font-semibold text-gray-800 mb-3">Other Income</div>
                       <div className="space-y-2">
+                        {additionalIncome.length === 0 && (
+                          <div className="rounded border border-green-200 bg-green-100 px-3 py-2 text-sm text-green-900">
+                            No other income items yet.
+                          </div>
+                        )}
                         {additionalIncome.map((item) => (
                           <div key={item.id} className="flex items-center justify-between">
                             <input
@@ -4120,6 +4442,11 @@ ${reportContent.innerHTML}
                         </div>
                       );
                     })}
+                    {expenses.length === 0 && (
+                      <div className="rounded border border-red-200 bg-red-100 px-3 py-2 text-sm text-red-900">
+                        No expense line items yet.
+                      </div>
+                    )}
                     <div className="space-y-1">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center space-x-2">

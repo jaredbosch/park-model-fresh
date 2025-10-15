@@ -8,7 +8,7 @@ import {
 import MobileHomeParkModel from "./MobileHomeParkModel";
 import LandingPage from "./LandingPage";
 import SharedReport from "./SharedReport";
-import { supabase, isSupabaseConfigured } from "./supabaseClient";
+import { supabase } from "./lib/supabaseClient";
 import { ToastProvider } from "./components/ToastProvider";
 
 function ProtectedRoute({ children }) {
@@ -16,7 +16,7 @@ function ProtectedRoute({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!supabase) return;
 
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
@@ -33,7 +33,7 @@ function ProtectedRoute({ children }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  if (!isSupabaseConfigured || !supabase) {
+  if (!supabase) {
     return <div>Authentication not configured.</div>;
   }
 

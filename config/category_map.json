@@ -1,0 +1,15 @@
+{
+  "Lot Rent": ["lot rent", "space rent", "pad rent", "lot rental income", "rc", "base rent"],
+  "Home Rent": ["home rent", "rto income", "lease income", "rental home"],
+  "Utility Reimbursement": ["water", "sewer", "trash", "storm", "utility reimbursement", "utility income"],
+  "Other Income": ["late fee", "other income", "misc income", "application fee", "pet fee"],
+  "Water/Sewer": ["water expense", "sewer", "storm water", "utility expense"],
+  "Property Taxes": ["property tax", "real estate tax"],
+  "Insurance": ["insurance", "liability", "workers comp"],
+  "Repairs & Maintenance": ["repairs", "maintenance", "materials"],
+  "Payroll": ["payroll", "wages", "salary"],
+  "Management Fees": ["management fee", "asset management"],
+  "Utilities": ["electric", "gas", "utilities"],
+  "Administrative": ["office", "admin", "supplies"],
+  "Other Expense": ["other expense", "misc expense", "bank charges"]
+}
