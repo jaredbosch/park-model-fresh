@@ -32,6 +32,18 @@ if (typeof window !== 'undefined' && !window.__PARK_MODEL_RUNTIME_GUARD__) {
 const isSupabaseConfigured = Boolean(supabase);
 const UNMAPPED_PNL_LABEL = 'Unmapped (Keep As-Is)';
 
+const createLineItemId = (prefix) => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch (error) {
+    console.warn('Unable to generate crypto UUID:', error);
+  }
+
+  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+};
+
 let globalUser = null;
 
 if (supabase && typeof supabase.auth !== 'undefined') {
@@ -476,14 +488,12 @@ const MobileHomeParkModel = () => {
     { id: 2, name: 'Rental Home Income', amount: 12000 },
     { id: 3, name: 'Late Fees', amount: 1200 },
   ]);
-  const [unmappedIncomeItems, setUnmappedIncomeItems] = useState([]);
   const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
     INCOME_CATEGORY_OPTIONS[0]
   );
   const [useActualIncome, setUseActualIncome] = useState(false);
   const [actualIncome, setActualIncome] = useState(0);
   const [expenses, setExpenses] = useState(() => createDefaultExpenses());
-  const [unmappedExpenseItems, setUnmappedExpenseItems] = useState([]);
   const [selectedExpenseCategory, setSelectedExpenseCategory] = useState(
     EXPENSE_CATEGORY_OPTIONS[0]
   );
@@ -761,10 +771,6 @@ const MobileHomeParkModel = () => {
       const {
         incomeLines = [],
         expenseLines = [],
-        mappedIncome = [],
-        unmappedIncome = [],
-        mappedExpense = [],
-        unmappedExpense = [],
         totals = null,
         stats = null,
         derived = {},
@@ -772,114 +778,66 @@ const MobileHomeParkModel = () => {
 
       const toArray = (value) => (Array.isArray(value) ? value : []);
 
-      const resolvedIncomeLines =
-        Array.isArray(incomeLines) && incomeLines.length > 0
-          ? incomeLines
-          : [...toArray(mappedIncome), ...toArray(unmappedIncome)];
-
-      const resolvedExpenseLines =
-        Array.isArray(expenseLines) && expenseLines.length > 0
-          ? expenseLines
-          : [...toArray(mappedExpense), ...toArray(unmappedExpense)];
-
-      const partitionByMapping = (items, section) => {
-        const mapped = [];
-        const unmapped = [];
-
-        items.forEach((item, index) => {
-          const candidate = item ?? {};
-          const resolvedCategory = candidate.mappedCategory ?? candidate.category;
-          const isUnmapped =
-            candidate.wasUnmapped === true || resolvedCategory === UNMAPPED_PNL_LABEL;
-
-          const enriched = {
-            ...candidate,
-            section,
-            wasUnmapped: isUnmapped,
-          };
-
-          if (isUnmapped) {
-            if (!enriched.category) {
-              enriched.category = section === 'income' ? 'Other Income' : 'Other Expense';
-            }
-            unmapped.push(enriched);
-          } else {
-            mapped.push(enriched);
-          }
-        });
-
-        return { mapped, unmapped };
-      };
-
-      const incomePartition = partitionByMapping(resolvedIncomeLines, 'income');
-      const expensePartition = partitionByMapping(resolvedExpenseLines, 'expense');
-
-      const normaliseAmount = (value) => {
-        const numeric = Number(value);
-        return Number.isFinite(numeric) ? numeric : 0;
-      };
-
-      const mapIncomeItem = (item, index) => {
+      const normaliseLine = (line, section, index) => {
+        const fallbackLabel = `${section === 'income' ? 'Income' : 'Expense'} ${index + 1}`;
+        const rawLabel =
+          line?.customLabel ??
+          line?.label ??
+          line?.name ??
+          line?.originalLabel ??
+          fallbackLabel;
         const label =
-          item?.label ?? item?.name ?? item?.originalLabel ?? `Income ${index + 1}`;
-        return {
-          id: item?.id || `income-${index}`,
-          name: label,
-          amount: normaliseAmount(item?.amount),
-          originalLabel: item?.originalLabel ?? label,
-          mappedCategory: item?.mappedCategory ?? item?.category ?? UNMAPPED_PNL_LABEL,
-          category: item?.category ?? item?.mappedCategory ?? UNMAPPED_PNL_LABEL,
-          editable: item?.editable !== false,
-        };
-      };
-
-      const mapExpenseItem = (item, index) => {
-        const label =
-          item?.label ?? item?.name ?? item?.originalLabel ?? `Expense ${index + 1}`;
-        return {
-          id: item?.id || `expense-${index}`,
-          name: label,
-          amount: normaliseAmount(item?.amount),
-          originalLabel: item?.originalLabel ?? label,
-          mappedCategory: item?.mappedCategory ?? item?.category ?? UNMAPPED_PNL_LABEL,
-          category: item?.category ?? item?.mappedCategory ?? UNMAPPED_PNL_LABEL,
-          editable: item?.editable !== false,
-        };
-      };
-
-      const lotRentEntries = incomePartition.mapped.filter((row) => {
+          typeof rawLabel === 'string' && rawLabel.trim() ? rawLabel.trim() : fallbackLabel;
+        const numericAmount = Number(line?.amount);
+        const amount = Number.isFinite(numericAmount) ? numericAmount : 0;
+        const rawCategory = line?.mappedCategory ?? line?.category;
         const resolvedCategory =
-          row?.mappedCategory === UNMAPPED_PNL_LABEL ? row?.category : row?.mappedCategory;
-        return resolvedCategory === 'Lot Rent';
-      });
+          rawCategory && rawCategory !== UNMAPPED_PNL_LABEL
+            ? rawCategory
+            : section === 'income'
+            ? 'Other Income'
+            : 'Other Expense';
 
-      const lotRentTotal =
-        Number.isFinite(Number(derived?.lotRentTotal))
-          ? Number(derived.lotRentTotal)
-          : lotRentEntries.reduce((sum, row) => sum + normaliseAmount(row?.amount), 0);
+        return {
+          id: line?.id || createLineItemId(section),
+          name: label,
+          amount,
+          originalLabel: line?.originalLabel ?? label,
+          category: resolvedCategory,
+          mappedCategory:
+            rawCategory && rawCategory !== UNMAPPED_PNL_LABEL ? rawCategory : null,
+          editable: line?.editable !== false,
+        };
+      };
 
-      const editableIncomeItems = [
-        ...incomePartition.mapped.filter((row) => {
-          const resolvedCategory =
-            row?.mappedCategory === UNMAPPED_PNL_LABEL ? row?.category : row?.mappedCategory;
-          return resolvedCategory !== 'Lot Rent';
-        }),
-        ...incomePartition.unmapped,
-      ];
+      const normalisedIncome = toArray(incomeLines).map((line, index) =>
+        normaliseLine(line, 'income', index)
+      );
+      const normalisedExpenses = toArray(expenseLines).map((line, index) =>
+        normaliseLine(line, 'expense', index)
+      );
 
-      const editableExpenseItems = [
-        ...expensePartition.mapped,
-        ...expensePartition.unmapped,
-      ];
+      const lotRentEntries = normalisedIncome.filter((item) => item.category === 'Lot Rent');
+      const resolvedLotRentTotal = (() => {
+        if (Number.isFinite(Number(derived?.lotRentTotal))) {
+          return Number(derived.lotRentTotal);
+        }
+        return lotRentEntries.reduce((sum, item) => sum + Number(item.amount), 0);
+      })();
 
-      setAdditionalIncome(editableIncomeItems.map(mapIncomeItem));
-      setUnmappedIncomeItems(incomePartition.unmapped.map(mapIncomeItem));
-      setExpenses(editableExpenseItems.map(mapExpenseItem));
-      setUnmappedExpenseItems(expensePartition.unmapped.map(mapExpenseItem));
+      const otherIncomeEntries = normalisedIncome.filter(
+        (item) => item.category !== 'Lot Rent'
+      );
 
-      if (lotRentTotal > 0) {
+      setAdditionalIncome(otherIncomeEntries);
+      setExpenses(normalisedExpenses);
+
+      if (lotRentEntries.length > 0 && resolvedLotRentTotal > 0) {
         setUseActualIncome(true);
-        setActualIncome(Math.round(lotRentTotal));
+        setActualIncome(Math.round(Math.max(resolvedLotRentTotal, 0)));
+      } else {
+        setUseActualIncome(false);
+        setActualIncome(0);
       }
 
       try {
@@ -887,9 +845,11 @@ const MobileHomeParkModel = () => {
           totals && typeof totals === 'object'
             ? {
                 ...totals,
-                lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)),
+                lotRentAnnual: Math.round(Math.max(resolvedLotRentTotal, 0)),
               }
-            : { lotRentAnnual: Math.round(Math.max(lotRentTotal, 0)) };
+            : lotRentEntries.length > 0
+            ? { lotRentAnnual: Math.round(Math.max(resolvedLotRentTotal, 0)) }
+            : totals ?? null;
 
         setPnlTotals(nextTotals);
         setPnlMappingStats(stats || null);
@@ -909,8 +869,6 @@ const MobileHomeParkModel = () => {
     [
       setAdditionalIncome,
       setExpenses,
-      setUnmappedExpenseItems,
-      setUnmappedIncomeItems,
       setUseActualIncome,
       setActualIncome,
       setPnlTotals,
@@ -1599,12 +1557,6 @@ const MobileHomeParkModel = () => {
         }
       }
 
-      if (Array.isArray(savedState?.unmappedIncomeItems)) {
-        setUnmappedIncomeItems(savedState.unmappedIncomeItems);
-      } else {
-        setUnmappedIncomeItems([]);
-      }
-
       let nextExpenses = null;
       if (Array.isArray(savedState?.expenses)) {
         nextExpenses = savedState.expenses;
@@ -1619,12 +1571,6 @@ const MobileHomeParkModel = () => {
         setExpenses(nextExpenses);
       } else {
         setExpenses(createDefaultExpenses());
-      }
-
-      if (Array.isArray(savedState?.unmappedExpenseItems)) {
-        setUnmappedExpenseItems(savedState.unmappedExpenseItems);
-      } else {
-        setUnmappedExpenseItems([]);
       }
 
       if (typeof savedState?.managementPercent === 'number') {
@@ -2122,10 +2068,7 @@ const MobileHomeParkModel = () => {
   }, []);
 
   const clearIncomeItems = useCallback(() => {
-    const hasMapped = additionalIncome.length > 0;
-    const hasUnmapped = unmappedIncomeItems.length > 0;
-
-    if (!hasMapped && !hasUnmapped) {
+    if (additionalIncome.length === 0) {
       return;
     }
 
@@ -2135,10 +2078,9 @@ const MobileHomeParkModel = () => {
     }
 
     setAdditionalIncome([]);
-    setUnmappedIncomeItems([]);
     setPnlTotals(null);
     setPnlMappingStats(null);
-  }, [additionalIncome.length, unmappedIncomeItems.length]);
+  }, [additionalIncome.length]);
 
   // Expense Functions
   const addExpenseItem = useCallback(() => {
@@ -2181,10 +2123,7 @@ const MobileHomeParkModel = () => {
   }, []);
 
   const clearExpenseItems = useCallback(() => {
-    const hasMapped = expenses.length > 0;
-    const hasUnmapped = unmappedExpenseItems.length > 0;
-
-    if (!hasMapped && !hasUnmapped) {
+    if (expenses.length === 0) {
       return;
     }
 
@@ -2194,8 +2133,7 @@ const MobileHomeParkModel = () => {
     }
 
     setExpenses([]);
-    setUnmappedExpenseItems([]);
-  }, [expenses.length, unmappedExpenseItems.length]);
+  }, [expenses.length]);
 
   // Calculations
   const calculations = useMemo(() => {
@@ -2211,15 +2149,10 @@ const MobileHomeParkModel = () => {
     const lotRentIncome = useActualIncome ? Number(actualIncome) : rentRollIncome;
 
     // Additional Income
-    const totalUnmappedIncome = unmappedIncomeItems.reduce(
+    const totalAdditionalIncome = additionalIncome.reduce(
       (sum, item) => sum + Number(item.amount),
       0
     );
-    const mappedAdditionalIncomeTotal = additionalIncome.reduce(
-      (sum, item) => sum + Number(item.amount),
-      0
-    );
-    const totalAdditionalIncome = mappedAdditionalIncomeTotal + totalUnmappedIncome;
 
     // Total Income
     const effectiveGrossIncome = lotRentIncome + totalAdditionalIncome;
@@ -2228,14 +2161,8 @@ const MobileHomeParkModel = () => {
 
     // Operating Expenses
     const managementFee = effectiveGrossIncome * (managementPercent / 100);
-    const totalUnmappedExpenses = unmappedExpenseItems.reduce(
-      (sum, item) => sum + Number(item.amount),
-      0
-    );
     const detailedExpenses =
-      expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) +
-      managementFee +
-      totalUnmappedExpenses;
+      expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
     const ratioValue = Number(expenseRatio);
     const expenseRatioPercent = Number.isFinite(ratioValue) ? Math.max(ratioValue, 0) : 0;
     const useExpenseRatioOverride = expenseRatioPercent > 0;
@@ -2636,15 +2563,12 @@ const MobileHomeParkModel = () => {
       rentRollIncome,
       lotRentIncome,
       totalAdditionalIncome,
-      mappedAdditionalIncomeTotal,
-      totalUnmappedIncome,
       effectiveGrossIncome,
       vacancyLoss,
       economicOccupancy,
       managementFee,
       totalExpenses,
       totalOpEx,
-      totalUnmappedExpenses,
       noi,
       capRate,
       totalInvestment,
@@ -2676,11 +2600,9 @@ const MobileHomeParkModel = () => {
   }, [
     units,
     additionalIncome,
-    unmappedIncomeItems,
     useActualIncome,
     actualIncome,
     expenses,
-    unmappedExpenseItems,
     managementPercent,
     purchaseInputs,
     irrInputs,
@@ -3069,9 +2991,7 @@ ${reportContent.innerHTML}
       propertyInfo,
       contactInfo: effectiveContactInfo,
       additionalIncome,
-      unmappedIncomeItems,
       expenses,
-      unmappedExpenseItems,
       managementPercent,
       purchaseInputs,
       irrInputs,
@@ -3107,9 +3027,7 @@ ${reportContent.innerHTML}
           calculations,
           units,
           additionalIncome,
-          unmappedIncomeItems,
           expenses,
-          unmappedExpenseItems,
           managementPercent,
           irrInputs,
           proformaInputs,
@@ -4392,6 +4310,11 @@ ${reportContent.innerHTML}
                     <div className="bg-white p-4 rounded border border-green-200">
                       <div className="font-semibold text-gray-800 mb-3">Other Income</div>
                       <div className="space-y-2">
+                        {additionalIncome.length === 0 && (
+                          <div className="rounded border border-green-200 bg-green-100 px-3 py-2 text-sm text-green-900">
+                            No other income items yet.
+                          </div>
+                        )}
                         {additionalIncome.map((item) => (
                           <div key={item.id} className="flex items-center justify-between">
                             <input
@@ -4415,29 +4338,8 @@ ${reportContent.innerHTML}
                             </button>
                           </div>
                         ))}
-                        {unmappedIncomeItems.length > 0 && (
-                          <details className="rounded border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
-                            <summary className="cursor-pointer font-semibold">
-                              Other Income (Unmapped) — {formatCurrency(calculations.totalUnmappedIncome)}
-                            </summary>
-                            <div className="mt-2 space-y-1 text-xs text-yellow-800">
-                              {unmappedIncomeItems.map((item) => (
-                                <div key={item.id} className="flex items-center justify-between gap-3">
-                                  <span className="font-medium">{item.name || item.originalLabel || 'Unlabeled Income'}</span>
-                                  <span className="font-semibold">{formatCurrency(item.amount)}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        )}
-                        {calculations.totalUnmappedIncome > 0 && (
-                          <div className="flex justify-between text-xs text-yellow-700">
-                            <span>Mapped Other Income</span>
-                            <span className="font-semibold text-yellow-900">{formatCurrency(calculations.mappedAdditionalIncomeTotal)}</span>
-                          </div>
-                        )}
                         <div className="flex justify-between pt-2 border-t border-gray-200">
-                          <span className="text-gray-700 font-semibold">Total Other Income (incl. unmapped)</span>
+                          <span className="text-gray-700 font-semibold">Total Other Income</span>
                           <span className="font-bold text-green-700">{formatCurrency(calculations.totalAdditionalIncome)}</span>
                         </div>
                       </div>
@@ -4539,20 +4441,10 @@ ${reportContent.innerHTML}
                         </div>
                       );
                     })}
-                    {unmappedExpenseItems.length > 0 && (
-                      <details className="rounded border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-900">
-                        <summary className="cursor-pointer font-semibold">
-                          Other Expenses (Unmapped) — {formatCurrency(calculations.totalUnmappedExpenses)}
-                        </summary>
-                        <div className="mt-2 space-y-1 text-xs text-orange-800">
-                          {unmappedExpenseItems.map((item) => (
-                            <div key={item.id} className="flex items-center justify-between gap-3">
-                              <span className="font-medium">{item.name || item.originalLabel || 'Unlabeled Expense'}</span>
-                              <span className="font-semibold">{formatCurrency(item.amount)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </details>
+                    {expenses.length === 0 && (
+                      <div className="rounded border border-red-200 bg-red-100 px-3 py-2 text-sm text-red-900">
+                        No expense line items yet.
+                      </div>
                     )}
                     <div className="space-y-1">
                       <div className="flex justify-between items-center">

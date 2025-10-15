@@ -411,7 +411,7 @@ const PnLUpload = ({
 
     const nextCache = { ...cacheRef.current };
     payloadRows.forEach((row) => {
-      if (row.mappedCategory === UNMAPPED_OPTION) {
+      if (!row || row.mappedCategory === UNMAPPED_OPTION || !row.originalLabel) {
         return;
       }
       const key = `${row.section}:${row.originalLabel.toLowerCase()}`;
@@ -427,48 +427,37 @@ const PnLUpload = ({
       const numericAmount = Number(row.amount);
       const safeAmount = Number.isFinite(numericAmount) ? numericAmount : 0;
       const label = row.customLabel?.trim() || row.originalLabel;
-      const wasUnmapped = row.mappedCategory === UNMAPPED_OPTION;
-      const category = wasUnmapped
-        ? section === 'income'
-          ? 'Other Income'
-          : 'Other Expense'
-        : row.mappedCategory;
+      const hasExplicitCategory =
+        row.mappedCategory && row.mappedCategory !== UNMAPPED_OPTION
+          ? row.mappedCategory
+          : null;
+      const category =
+        hasExplicitCategory || (section === 'income' ? 'Other Income' : 'Other Expense');
 
       return {
         id: createUniqueId(section),
         section,
         category,
-        mappedCategory: row.mappedCategory,
+        mappedCategory: hasExplicitCategory,
         originalLabel: row.originalLabel,
         label,
         name: label,
         amount: safeAmount,
         editable: true,
-        wasUnmapped,
       };
     };
 
     const incomeLines = incomeRows.map((row) => buildLineItem(row, 'income'));
     const expenseLines = expenseRows.map((row) => buildLineItem(row, 'expense'));
 
-    const mappedIncome = incomeLines.filter((line) => !line.wasUnmapped);
-    const unmappedIncome = incomeLines.filter((line) => line.wasUnmapped);
-    const mappedExpense = expenseLines.filter((line) => !line.wasUnmapped);
-    const unmappedExpense = expenseLines.filter((line) => line.wasUnmapped);
-
-    const lotRentTotal = mappedIncome.reduce((sum, line) => {
-      const candidate = line.mappedCategory === UNMAPPED_OPTION ? line.category : line.mappedCategory;
-      return candidate === 'Lot Rent' ? sum + line.amount : sum;
+    const lotRentTotal = incomeLines.reduce((sum, line) => {
+      return line.category === 'Lot Rent' ? sum + line.amount : sum;
     }, 0);
 
     if (typeof onApplyMapping === 'function') {
       onApplyMapping({
         incomeLines,
         expenseLines,
-        mappedIncome,
-        unmappedIncome,
-        mappedExpense,
-        unmappedExpense,
         totals,
         stats,
         derived: {
@@ -477,17 +466,10 @@ const PnLUpload = ({
       });
     }
 
-    showToast({ message: '✅ P&L mapping applied successfully', tone: 'success' });
+    showToast({ message: '✅ All P&L items imported as editable lines', tone: 'success' });
     setModalOpen(false);
     setCompletionMessage('');
-  }, [
-    expenseRows,
-    incomeRows,
-    onApplyMapping,
-    showToast,
-    stats,
-    totals,
-  ]);
+  }, [expenseRows, incomeRows, onApplyMapping, showToast, stats, totals]);
 
   const handleExport = useCallback(() => {
     exportAsJson([...incomeRows, ...expenseRows]);
