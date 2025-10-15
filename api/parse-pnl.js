@@ -95,22 +95,40 @@ function extractFallbackRows(text) {
     return rows;
   }
 
+  const extractLastNumericValue = (line) => {
+    const matches = line.match(/[-$]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?/g);
+    if (!matches || matches.length === 0) {
+      return null;
+    }
+
+    const last = matches[matches.length - 1];
+    const numeric = Number.parseFloat(last.replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+
   const lines = text.split('\n');
-  for (const line of lines) {
-    if (!line || line.length < 5) {
+  for (const rawLine of lines) {
+    if (!rawLine || rawLine.length < 5) {
       continue;
     }
 
-    const match = line.match(
-      /^([A-Za-z0-9\s&().\/-]+)\s+([-$]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/
-    );
-    if (!match) {
+    const amount = extractLastNumericValue(rawLine);
+    if (!Number.isFinite(amount)) {
       continue;
     }
 
-    const label = match[1].trim();
-    const amount = Number.parseFloat(match[2].replace(/[^0-9.-]/g, ''));
-    if (!label || Number.isNaN(amount)) {
+    let label = rawLine.replace(/\d.*$/, '').trim();
+    if (!label) {
+      label = rawLine.replace(/[-$]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\s*$/, '').trim();
+    }
+    if (!label) {
+      continue;
+    }
+
+    if (/\d{2,}\s*\S*$/.test(label) && !/^\d{2,}\b/.test(label)) {
+      label = label.replace(/\d{2,}.*$/, '').trim();
+    }
+    if (!label) {
       continue;
     }
 
