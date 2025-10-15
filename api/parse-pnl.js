@@ -50,7 +50,7 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
           ],
         },
       ],
-      response_format: { type: 'json_object' },
+      text: { format: 'json' },
     });
 
     const content = response.output?.[0]?.content?.[0]?.text;
