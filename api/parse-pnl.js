@@ -1,3 +1,6 @@
+import fs from 'fs';
+import { promises as fsPromises } from 'fs';
+import formidable from 'formidable';
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
 
@@ -19,16 +22,18 @@ function ensureClient() {
   }
 }
 
-async function extractStructuredPnlWithGpt(buffer, filename) {
+async function extractStructuredPnlWithGpt(filePath, filename) {
   ensureClient();
-  // Upload file to OpenAI
-  const fileUpload = await openaiClient.files.create({
-    file: buffer,
-    purpose: 'assistants',
-    filename: filename,
-  });
-
+  const stream = fs.createReadStream(filePath);
+  let fileUpload;
   try {
+    // Upload file to OpenAI
+    fileUpload = await openaiClient.files.create({
+      file: stream,
+      purpose: 'assistants',
+      filename: filename,
+    });
+
     // Ask GPT-4o to extract structured data
     const response = await openaiClient.responses.create({
       model: 'gpt-4o',
@@ -56,8 +61,14 @@ async function extractStructuredPnlWithGpt(buffer, filename) {
 
     return JSON.parse(content);
   } finally {
+    if (typeof stream.close === 'function') {
+      stream.close();
+    }
+    const uploadId = fileUpload?.id;
     try {
-      await openaiClient.files.del(fileUpload.id);
+      if (uploadId) {
+        await openaiClient.files.del(uploadId);
+      }
     } catch (cleanupError) {
       console.warn('Unable to delete uploaded P&L file from OpenAI:', cleanupError);
     }
@@ -71,15 +82,46 @@ export default async function handler(req, res) {
     return;
   }
 
+  let tempFilePath;
+  let originalFilename;
+
   try {
-    const { file, filename } = req.body || {};
-    if (!file || !filename) {
-      res.status(400).json({ success: false, error: 'Missing file payload.' });
+    await fsPromises.mkdir('/tmp', { recursive: true });
+
+    const form = formidable({
+      multiples: false,
+      keepExtensions: true,
+      maxFileSize: 50 * 1024 * 1024,
+      uploadDir: '/tmp',
+    });
+
+    const { files } = await new Promise((resolve, reject) => {
+      form.parse(req, (err, fields, filesResult) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve({ fields, files: filesResult });
+      });
+    });
+
+    const incomingFile = files?.file;
+    const fileDescriptor = Array.isArray(incomingFile) ? incomingFile[0] : incomingFile;
+
+    if (!fileDescriptor) {
+      res.status(400).json({ success: false, error: 'No file uploaded.' });
       return;
     }
 
-    const buffer = Buffer.from(file, 'base64');
-    const parsed = await extractStructuredPnlWithGpt(buffer, filename);
+    tempFilePath = fileDescriptor.filepath || fileDescriptor.path;
+    originalFilename = fileDescriptor.originalFilename || fileDescriptor.newFilename || 'upload.pdf';
+
+    if (!tempFilePath) {
+      res.status(400).json({ success: false, error: 'Uploaded file is missing a temporary path.' });
+      return;
+    }
+
+    const parsed = await extractStructuredPnlWithGpt(tempFilePath, originalFilename);
 
     if (!parsed || typeof parsed !== 'object') {
       res.status(422).json({ success: false, error: 'Unable to parse structured P&L data.' });
@@ -89,7 +131,7 @@ export default async function handler(req, res) {
     if (supabase) {
       try {
         await supabase.from('parsed_pnls').insert({
-          filename,
+          filename: originalFilename,
           parsed_json: parsed,
           parsed_at: new Date().toISOString(),
           model_used: 'gpt-4o',
@@ -103,7 +145,7 @@ export default async function handler(req, res) {
       success: true,
       data: parsed,
       metadata: {
-        source_filename: filename,
+        source_filename: originalFilename,
         extraction_strategy: 'gpt-4o-structured',
         model_used: 'gpt-4o',
       },
@@ -114,5 +156,9 @@ export default async function handler(req, res) {
     res
       .status(statusCode)
       .json({ success: false, error: error.message || 'Unexpected error while parsing P&L.' });
+  } finally {
+    if (tempFilePath) {
+      await fsPromises.unlink(tempFilePath).catch(() => {});
+    }
   }
 }

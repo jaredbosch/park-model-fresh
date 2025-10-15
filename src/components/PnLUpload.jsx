@@ -302,22 +302,19 @@ const PnLUpload = ({
     setIsProgressVisible(true);
     updateProgress(10, 'Uploading P&L…');
     beginSlowTimer();
-
-    const reader = new FileReader();
-    reader.onloadend = async () => {
+    const processUpload = async () => {
       try {
-        if (typeof reader.result !== 'string') {
-          throw new Error('Unable to read the selected file.');
-        }
+        const formData = new FormData();
+        formData.append('file', file);
 
-        const base64 = reader.result.split(',')[1];
-        updateProgress(30, 'Parsing P&L…');
+        updateProgress(35, 'Parsing P&L…');
 
         const response = await fetch('/api/parse-pnl', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: base64, filename: file.name }),
+          body: formData,
         });
+
+        updateProgress(60, 'Processing results…');
 
         const payload = await response.json();
         if (!response.ok || !payload?.success) {
@@ -344,7 +341,9 @@ const PnLUpload = ({
         setTotals({
           totalIncome: Number(data.income.total_income) || 0,
           totalExpenses: Number(data.expense.total_expense) || 0,
-          netIncome: Number(data.net_income) || (Number(data.income.total_income) || 0) - (Number(data.expense.total_expense) || 0),
+          netIncome:
+            Number(data.net_income) ||
+            (Number(data.income.total_income) || 0) - (Number(data.expense.total_expense) || 0),
         });
 
         completeProgress();
@@ -362,7 +361,7 @@ const PnLUpload = ({
       }
     };
 
-    reader.readAsDataURL(file);
+    processUpload();
   }, [beginSlowTimer, completeProgress, handleSetRows, resetProgress, updateProgress]);
 
   const handleCloseModal = useCallback(() => {
