@@ -90,6 +90,17 @@ function exportAsJson(rows) {
   URL.revokeObjectURL(url);
 }
 
+function createUniqueId(prefix = 'pnl-line') {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch (error) {
+    console.warn('Unable to access crypto.randomUUID:', error);
+  }
+  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+}
+
 const ProgressBar = ({ progress, label, fading, showNotice }) => (
   <div className={`mt-3 w-full transition-opacity ${fading ? 'opacity-0' : 'opacity-100'}`}>
     <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
@@ -111,23 +122,25 @@ const MappingRow = ({
   onChangeLabel,
   categoryOptions,
 }) => {
-  const highlightClass = row.mappedCategory === UNMAPPED_OPTION ? 'bg-yellow-50' : '';
+  const isUnmapped = row.mappedCategory === UNMAPPED_OPTION;
+  const rowClassName = [
+    'grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 rounded-lg border p-4 text-sm text-gray-100 transition-colors hover:bg-slate-800/90',
+    isUnmapped ? 'border-amber-500/40 bg-amber-500/10' : 'border-slate-700 bg-slate-800/70',
+  ].join(' ');
 
   return (
-    <div
-      className={`grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 rounded-lg border border-slate-700 bg-slate-800/60 p-4 text-sm text-white ${highlightClass}`}
-    >
+    <div className={rowClassName}>
       <div className="space-y-1">
-        <div className="font-semibold text-slate-100">{row.originalLabel}</div>
+        <div className="font-semibold text-gray-100">{row.originalLabel}</div>
         <input
           type="text"
           value={row.customLabel}
           onChange={(event) => onChangeLabel(row.id, event.target.value)}
-          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-100 focus:border-blue-400 focus:outline-none"
+          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-gray-100 placeholder:text-slate-500 focus:border-blue-400 focus:outline-none"
           placeholder="Rename line item"
         />
       </div>
-      <div className="self-center text-right text-base font-semibold text-blue-200">
+      <div className="self-center text-right text-base font-semibold text-indigo-200">
         ${row.amount.toLocaleString(undefined, {
           minimumFractionDigits: 0,
           maximumFractionDigits: 0,
@@ -140,7 +153,7 @@ const MappingRow = ({
         <select
           value={row.mappedCategory}
           onChange={(event) => onChangeCategory(row.id, event.target.value)}
-          className="w-full rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-slate-100 focus:border-blue-400 focus:outline-none"
+          className="w-full rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
         >
           <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
           {categoryOptions.map((option) => (
@@ -407,45 +420,59 @@ const PnLUpload = ({
     cacheRef.current = nextCache;
     persistCachedMappings(nextCache);
 
-    const mappedIncome = incomeRows.filter((row) => row.mappedCategory !== UNMAPPED_OPTION);
-    const unmappedIncome = incomeRows.filter((row) => row.mappedCategory === UNMAPPED_OPTION);
-    const mappedExpense = expenseRows.filter((row) => row.mappedCategory !== UNMAPPED_OPTION);
-    const unmappedExpense = expenseRows.filter((row) => row.mappedCategory === UNMAPPED_OPTION);
+    const buildLineItem = (row, prefix) => {
+      const numericAmount = Number(row.amount);
+      return {
+        id: createUniqueId(prefix),
+        label: row.customLabel?.trim() || row.originalLabel,
+        originalLabel: row.originalLabel,
+        mappedCategory: row.mappedCategory,
+        amount: Number.isFinite(numericAmount) ? numericAmount : 0,
+        section: row.section,
+        editable: true,
+        isMapped: row.mappedCategory !== UNMAPPED_OPTION,
+      };
+    };
 
-    const normaliseRow = (row) => ({
-      originalLabel: row.originalLabel,
-      mappedCategory: row.mappedCategory,
-      label: row.customLabel?.trim() || row.originalLabel,
-      amount: row.amount,
-      section: row.section,
-    });
+    const incomeLines = incomeRows.map((row) => buildLineItem(row, 'income'));
+    const expenseLines = expenseRows.map((row) => buildLineItem(row, 'expense'));
 
-    const lotRentTotal = mappedIncome.reduce((sum, row) => {
-      if (row.mappedCategory === 'Lot Rent') {
-        return sum + (Number(row.amount) || 0);
-      }
-      return sum;
+    const mappedIncome = incomeLines.filter((line) => line.isMapped);
+    const unmappedIncome = incomeLines.filter((line) => !line.isMapped);
+    const mappedExpense = expenseLines.filter((line) => line.isMapped);
+    const unmappedExpense = expenseLines.filter((line) => !line.isMapped);
+
+    const lotRentTotal = mappedIncome.reduce((sum, line) => {
+      return line.mappedCategory === 'Lot Rent' ? sum + line.amount : sum;
     }, 0);
 
-    onApplyMapping({
-      mappedIncome: mappedIncome.map(normaliseRow),
-      unmappedIncome: unmappedIncome.map(normaliseRow),
-      mappedExpense: mappedExpense.map(normaliseRow),
-      unmappedExpense: unmappedExpense.map(normaliseRow),
-      totals,
-      stats,
-      derived: {
-        lotRentTotal,
-      },
-    });
-  }, [expenseRows, incomeRows, onApplyMapping, stats, totals]);
+    if (typeof onApplyMapping === 'function') {
+      onApplyMapping({
+        incomeLines,
+        expenseLines,
+        mappedIncome,
+        unmappedIncome,
+        mappedExpense,
+        unmappedExpense,
+        totals,
+        stats,
+        derived: {
+          lotRentTotal,
+        },
+      });
+    }
 
-  const handleAcceptMapping = useCallback(() => {
-    applyMapping();
     showToast({ message: '✅ Mapping applied successfully', tone: 'success' });
     setModalOpen(false);
     setCompletionMessage('');
-  }, [applyMapping, setModalOpen, setCompletionMessage, showToast]);
+  }, [
+    expenseRows,
+    incomeRows,
+    onApplyMapping,
+    showToast,
+    stats,
+    totals,
+  ]);
 
   const handleExport = useCallback(() => {
     exportAsJson([...incomeRows, ...expenseRows]);
@@ -627,35 +654,45 @@ const PnLUpload = ({
               </section>
             </div>
 
-            <footer className="sticky bottom-0 border-t border-slate-800 bg-slate-950/90 px-6 py-4">
+            <footer className="sticky bottom-0 border-t border-slate-800 bg-slate-900/95 px-6 py-4 backdrop-blur">
               <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div className="space-y-1 text-sm text-slate-200">
+                <div className="space-y-1 text-sm text-gray-100">
                   <div>
-                    Total Income: <span className="font-semibold text-blue-200">${totals.totalIncome.toLocaleString()}</span>
+                    Total Income:{' '}
+                    <span className="font-semibold text-blue-200">
+                      ${totals.totalIncome.toLocaleString()}
+                    </span>
                   </div>
                   <div>
-                    Total Expenses: <span className="font-semibold text-rose-200">${totals.totalExpenses.toLocaleString()}</span>
+                    Total Expenses:{' '}
+                    <span className="font-semibold text-rose-200">
+                      ${totals.totalExpenses.toLocaleString()}
+                    </span>
                   </div>
                   <div>
-                    Net Income: <span className="font-semibold text-emerald-200">${totals.netIncome.toLocaleString()}</span>
+                    Net Income:{' '}
+                    <span className="font-semibold text-emerald-200">
+                      ${totals.netIncome.toLocaleString()}
+                    </span>
                   </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
-                    onClick={handleCloseModal}
-                    className="border border-slate-600 bg-transparent text-slate-100 hover:bg-slate-800"
+                    onClick={() => {
+                      setCompletionMessage('');
+                      handleCloseModal();
+                    }}
+                    className="border border-slate-600 bg-slate-800 text-gray-100 hover:bg-slate-700"
                   >
                     Cancel
                   </Button>
-                  <div className="flex items-center">
-                    <button
-                      onClick={handleAcceptMapping}
-                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2 rounded-lg shadow transition-colors"
-                    >
-                      Accept Mapping
-                    </button>
-                  </div>
+                  <Button
+                    onClick={applyMapping}
+                    className="bg-indigo-600 px-6 py-2 text-white shadow hover:bg-indigo-500"
+                  >
+                    Accept Mapping
+                  </Button>
                 </div>
               </div>
             </footer>

@@ -30,6 +30,7 @@ if (typeof window !== 'undefined' && !window.__PARK_MODEL_RUNTIME_GUARD__) {
 }
 
 const isSupabaseConfigured = Boolean(supabase);
+const UNMAPPED_PNL_LABEL = 'Unmapped (Keep As-Is)';
 
 let globalUser = null;
 
@@ -758,6 +759,8 @@ const MobileHomeParkModel = () => {
       }
 
       const {
+        incomeLines = [],
+        expenseLines = [],
         mappedIncome = [],
         unmappedIncome = [],
         mappedExpense = [],
@@ -767,63 +770,94 @@ const MobileHomeParkModel = () => {
         derived = {},
       } = payload;
 
+      const toArray = (value) => (Array.isArray(value) ? value : []);
+
+      const resolvedIncomeLines =
+        Array.isArray(incomeLines) && incomeLines.length > 0
+          ? incomeLines
+          : [...toArray(mappedIncome), ...toArray(unmappedIncome)];
+
+      const resolvedExpenseLines =
+        Array.isArray(expenseLines) && expenseLines.length > 0
+          ? expenseLines
+          : [...toArray(mappedExpense), ...toArray(unmappedExpense)];
+
+      const resolvedMappedIncome =
+        toArray(mappedIncome).length > 0
+          ? toArray(mappedIncome)
+          : resolvedIncomeLines.filter(
+              (item) => (item?.mappedCategory ?? item?.category) !== UNMAPPED_PNL_LABEL
+            );
+
+      const resolvedUnmappedIncome =
+        toArray(unmappedIncome).length > 0
+          ? toArray(unmappedIncome)
+          : resolvedIncomeLines.filter(
+              (item) => (item?.mappedCategory ?? item?.category) === UNMAPPED_PNL_LABEL
+            );
+
+      const resolvedMappedExpense =
+        toArray(mappedExpense).length > 0
+          ? toArray(mappedExpense)
+          : resolvedExpenseLines.filter(
+              (item) => (item?.mappedCategory ?? item?.category) !== UNMAPPED_PNL_LABEL
+            );
+
+      const resolvedUnmappedExpense =
+        toArray(unmappedExpense).length > 0
+          ? toArray(unmappedExpense)
+          : resolvedExpenseLines.filter(
+              (item) => (item?.mappedCategory ?? item?.category) === UNMAPPED_PNL_LABEL
+            );
+
       const normaliseAmount = (value) => {
         const numeric = Number(value);
         return Number.isFinite(numeric) ? numeric : 0;
       };
 
-      const lotRentEntries = mappedIncome.filter(
-        (row) => row.mappedCategory === 'Lot Rent'
+      const mapIncomeItem = (item, index) => {
+        const label =
+          item?.label ?? item?.name ?? item?.originalLabel ?? `Income ${index + 1}`;
+        return {
+          id: item?.id || `income-${index}`,
+          name: label,
+          amount: normaliseAmount(item?.amount),
+          originalLabel: item?.originalLabel ?? label,
+          mappedCategory: item?.mappedCategory ?? item?.category ?? UNMAPPED_PNL_LABEL,
+          editable: item?.editable !== false,
+        };
+      };
+
+      const mapExpenseItem = (item, index) => {
+        const label =
+          item?.label ?? item?.name ?? item?.originalLabel ?? `Expense ${index + 1}`;
+        return {
+          id: item?.id || `expense-${index}`,
+          name: label,
+          amount: normaliseAmount(item?.amount),
+          originalLabel: item?.originalLabel ?? label,
+          mappedCategory: item?.mappedCategory ?? item?.category ?? UNMAPPED_PNL_LABEL,
+          editable: item?.editable !== false,
+        };
+      };
+
+      const lotRentEntries = resolvedMappedIncome.filter(
+        (row) => (row?.mappedCategory ?? row?.category) === 'Lot Rent'
       );
 
       const lotRentTotal =
         Number.isFinite(Number(derived?.lotRentTotal))
           ? Number(derived.lotRentTotal)
-          : lotRentEntries.reduce((sum, row) => sum + normaliseAmount(row.amount), 0);
+          : lotRentEntries.reduce((sum, row) => sum + normaliseAmount(row?.amount), 0);
 
-      const otherIncomeItems = mappedIncome.filter(
-        (row) => row.mappedCategory !== 'Lot Rent'
+      const otherIncomeItems = resolvedMappedIncome.filter(
+        (row) => (row?.mappedCategory ?? row?.category) !== 'Lot Rent'
       );
 
-      setAdditionalIncome(
-        otherIncomeItems.map((item, index) => ({
-          id: index + 1,
-          name: item.label,
-          amount: normaliseAmount(item.amount),
-          originalLabel: item.originalLabel,
-          mappedCategory: item.mappedCategory,
-        }))
-      );
-
-      setUnmappedIncomeItems(
-        unmappedIncome.map((item, index) => ({
-          id: `unmapped-income-${index}`,
-          name: item.label,
-          amount: normaliseAmount(item.amount),
-          originalLabel: item.originalLabel,
-          mappedCategory: item.mappedCategory,
-        }))
-      );
-
-      setExpenses(
-        mappedExpense.map((item, index) => ({
-          id: index + 1,
-          name: item.label,
-          amount: normaliseAmount(item.amount),
-          originalLabel: item.originalLabel,
-          mappedCategory: item.mappedCategory,
-        }))
-      );
-
-      setUnmappedExpenseItems(
-        unmappedExpense.map((item, index) => ({
-          id: `unmapped-expense-${index}`,
-          name: item.label,
-          amount: normaliseAmount(item.amount),
-          originalLabel: item.originalLabel,
-          mappedCategory: item.mappedCategory,
-        }))
-      );
+      setAdditionalIncome(otherIncomeItems.map(mapIncomeItem));
+      setUnmappedIncomeItems(resolvedUnmappedIncome.map(mapIncomeItem));
+      setExpenses(resolvedMappedExpense.map(mapExpenseItem));
+      setUnmappedExpenseItems(resolvedUnmappedExpense.map(mapExpenseItem));
 
       if (lotRentTotal > 0) {
         setUseActualIncome(true);
