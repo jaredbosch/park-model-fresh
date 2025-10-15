@@ -89,50 +89,44 @@ function normalizeText(rawText = '') {
     .trim();
 }
 
+function extractLastNumericValue(line) {
+  if (!line) return null;
+  const matches = [...line.matchAll(/[-$]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?/g)];
+  if (matches.length === 0) return null;
+  const last = matches[matches.length - 1][0];
+  const value = parseFloat(last.replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(value) ? value : null;
+}
+
 function extractFallbackRows(text) {
   const rows = [];
-  if (!text) {
-    return rows;
-  }
-
-  const extractLastNumericValue = (line) => {
-    const matches = line.match(/[-$]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?/g);
-    if (!matches || matches.length === 0) {
-      return null;
-    }
-
-    const last = matches[matches.length - 1];
-    const numeric = Number.parseFloat(last.replace(/[^0-9.-]/g, ''));
-    return Number.isFinite(numeric) ? numeric : null;
-  };
+  if (!text) return rows;
 
   const lines = text.split('\n');
-  for (const rawLine of lines) {
-    if (!rawLine || rawLine.length < 5) {
-      continue;
-    }
+  for (const line of lines) {
+    if (!line || line.length < 5) continue;
 
-    const amount = extractLastNumericValue(rawLine);
-    if (!Number.isFinite(amount)) {
-      continue;
-    }
+    // Get the last numeric value on the line (the total)
+    const value = extractLastNumericValue(line);
+    if (value === null) continue;
 
-    let label = rawLine.replace(/\d.*$/, '').trim();
+    // Remove everything after the first long number sequence to isolate the label
+    const accountMatch = line.match(/^\s*(\d{3,4})/);
+    let label = line.replace(/\d{2,}.*$/, '').trim();
     if (!label) {
-      label = rawLine.replace(/[-$]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\s*$/, '').trim();
-    }
-    if (!label) {
-      continue;
-    }
-
-    if (/\d{2,}\s*\S*$/.test(label) && !/^\d{2,}\b/.test(label)) {
-      label = label.replace(/\d{2,}.*$/, '').trim();
-    }
-    if (!label) {
-      continue;
+      // fallback: remove everything after the last space before the number
+      const idx = line.lastIndexOf(' ');
+      label = idx > 0 ? line.slice(0, idx).trim() : line.trim();
     }
 
-    rows.push({ label, amount });
+    // Skip if the label still looks numeric noise
+    if (!label || !/[A-Za-z]/.test(label)) continue;
+
+    if (accountMatch && !label.startsWith(accountMatch[1])) {
+      label = `${accountMatch[1]} ${label}`.trim();
+    }
+
+    rows.push({ label, amount: value });
   }
 
   return rows;
