@@ -499,6 +499,7 @@ const MobileHomeParkModel = () => {
   );
   const [managementPercent, setManagementPercent] = useState(5);
   const [expenseRatio, setExpenseRatio] = useState(0);
+  const [expenseOverrides, setExpenseOverrides] = useState({});
   const [pnlTotals, setPnlTotals] = useState(null);
   const [pnlMappingStats, setPnlMappingStats] = useState(null);
   const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
@@ -2112,6 +2113,18 @@ const MobileHomeParkModel = () => {
 
   const removeExpenseItem = useCallback((id) => {
     setExpenses((prev) => prev.filter((expense) => expense.id !== id));
+    setExpenseOverrides((previous) => {
+      if (!previous || typeof previous !== 'object') {
+        return previous;
+      }
+      const key = String(id);
+      if (!(key in previous)) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
   }, []);
 
   const updateExpenseItem = useCallback((id, field, value) => {
@@ -2133,7 +2146,72 @@ const MobileHomeParkModel = () => {
     }
 
     setExpenses([]);
+    setExpenseOverrides({});
   }, [expenses.length]);
+
+  const handleExpenseOverrideChange = useCallback((id, yearIndex, value) => {
+    setExpenseOverrides((previous) => {
+      const next = { ...(previous || {}) };
+      const key = String(id);
+      const existing = { ...(next[key] || {}) };
+
+      if (value === null || value === '' || !Number.isFinite(value)) {
+        if (yearIndex in existing) {
+          delete existing[yearIndex];
+        }
+      } else {
+        existing[yearIndex] = value;
+      }
+
+      if (Object.keys(existing).length === 0) {
+        delete next[key];
+      } else {
+        next[key] = existing;
+      }
+
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setExpenseOverrides((previous) => {
+      if (!previous || typeof previous !== 'object') {
+        return previous;
+      }
+
+      const validIds = new Set(expenses.map((expense) => String(expense.id)));
+      let changed = false;
+      const next = {};
+
+      Object.entries(previous).forEach(([idKey, overrides]) => {
+        if (!validIds.has(idKey)) {
+          changed = true;
+          return;
+        }
+
+        const filtered = {};
+        Object.entries(overrides || {}).forEach(([yearKey, overrideValue]) => {
+          if (Number.isFinite(overrideValue)) {
+            filtered[yearKey] = overrideValue;
+          } else {
+            changed = true;
+          }
+        });
+
+        if (Object.keys(filtered).length > 0) {
+          next[idKey] = filtered;
+        } else if (overrides && Object.keys(overrides).length > 0) {
+          changed = true;
+        }
+      });
+
+      if (!changed && Object.keys(next).length === Object.keys(previous).length) {
+        return previous;
+      }
+
+      return next;
+    });
+  }, [expenses]);
 
   // Calculations
   const calculations = useMemo(() => {
@@ -2325,7 +2403,6 @@ const MobileHomeParkModel = () => {
       const baseRent = occupiedUnits > 0 ? lotRentIncome / occupiedUnits / 12 : 0;
       let currentRent = Number.isFinite(baseRent) ? baseRent : 0;
       let currentOtherIncome = totalAdditionalIncome;
-      let currentExpensesValue = totalOpEx;
 
       const resolveMode = (mode) =>
         mode === 'dollar' || mode === 'flat' ? 'dollar' : 'percent';
@@ -2376,6 +2453,38 @@ const MobileHomeParkModel = () => {
         };
       };
 
+      const expenseGrowthPercent = toNumber(proformaInputs.annualExpenseIncrease);
+      const expenseGrowthRate = expenseGrowthPercent / 100;
+      const expenseProjections = expenses.map((expense) => {
+        const baseAmount = Number(expense.amount);
+        const safeBase = Number.isFinite(baseAmount) ? baseAmount : 0;
+        const yearValues = [];
+        const overridesForExpense =
+          expenseOverrides?.[String(expense.id)] ?? expenseOverrides?.[expense.id] ?? {};
+
+        for (let yearIndex = 0; yearIndex < projectionCount; yearIndex += 1) {
+          const previousValue = yearIndex === 0 ? safeBase : yearValues[yearIndex - 1];
+          const defaultValue =
+            yearIndex === 0 ? safeBase : previousValue * (1 + expenseGrowthRate);
+          const rawOverride = overridesForExpense?.[yearIndex];
+          const numericOverride =
+            typeof rawOverride === 'number' ? rawOverride : Number(rawOverride);
+          const hasOverride =
+            rawOverride !== undefined &&
+            rawOverride !== null &&
+            Number.isFinite(numericOverride);
+          const finalValue = hasOverride ? numericOverride : defaultValue;
+          yearValues.push(finalValue);
+        }
+
+        return {
+          ...expense,
+          yearValues,
+        };
+      });
+
+      const managementFeeProjection = [];
+
       for (let year = 1; year <= projectionCount; year += 1) {
         let newLeases = 0;
         if (year === 1) newLeases = toNumber(proformaInputs.year1NewLeases);
@@ -2417,17 +2526,20 @@ const MobileHomeParkModel = () => {
         const yearLotRent = currentRent * currentOccupiedUnits * 12;
         const yearTotalIncome = yearLotRent + currentOtherIncome;
 
+        const yearIndex = year - 1;
+        const detailedExpensesForYear = expenseProjections.reduce(
+          (sum, expense) => sum + (Number(expense.yearValues?.[yearIndex]) || 0),
+          0
+        );
+
+        let managementFeeForYear = yearTotalIncome * (managementPercent / 100);
+        managementFeeProjection.push(managementFeeForYear);
+
         let yearExpensesValue;
         if (useExpenseRatioOverride) {
           yearExpensesValue = yearTotalIncome * (expenseRatioPercent / 100);
-          currentExpensesValue = yearExpensesValue;
         } else {
-          if (year > 1) {
-            currentExpensesValue =
-              currentExpensesValue *
-              (1 + toNumber(proformaInputs.annualExpenseIncrease) / 100);
-          }
-          yearExpensesValue = currentExpensesValue;
+          yearExpensesValue = detailedExpensesForYear + managementFeeForYear;
         }
 
         const yearNOI = yearTotalIncome - yearExpensesValue;
@@ -2454,10 +2566,11 @@ const MobileHomeParkModel = () => {
         });
       }
 
-      return years;
+      return { years, expenseProjections, managementFeeProjection };
     };
 
-    const proformaYears = calculateProforma();
+    const { years: proformaYears, expenseProjections, managementFeeProjection } =
+      calculateProforma();
     const firstYearData = proformaYears[0] || null;
     const yearSevenData =
       proformaYears.find((entry) => entry.year === 7) ||
@@ -2591,6 +2704,9 @@ const MobileHomeParkModel = () => {
       irr,
       equityMultiple,
       proformaYears,
+      expenseProjections,
+      managementFeeProjection,
+      useExpenseRatioOverride,
       annualDebtServiceSchedule,
       interestOnlyMonthlyPayment,
       postInterestOnlyMonthlyPayment: amortizingMonthlyPayment,
@@ -2611,6 +2727,7 @@ const MobileHomeParkModel = () => {
     irrInputs,
     proformaInputs,
     expenseRatio,
+    expenseOverrides,
     projectionYears,
   ]);
 
@@ -5065,6 +5182,106 @@ ${reportContent.innerHTML}
                         </td>
                       ))}
                     </tr>
+                    {calculations.expenseProjections?.length > 0 && (
+                      <tr className="bg-red-100/40 border-b border-gray-200">
+                        <td className="p-3 text-xs font-semibold uppercase tracking-wide text-red-800 border-r border-gray-200">
+                          Expense Notes & Overrides
+                        </td>
+                        {calculations.proformaYears.map((year) => (
+                          <td
+                            key={`expense-heading-${year.year}`}
+                            className="p-3 text-xs text-center font-semibold text-red-700 border-r border-gray-200"
+                          >
+                            Year {year.year}
+                          </td>
+                        ))}
+                      </tr>
+                    )}
+                    {calculations.expenseProjections?.map((expense) => {
+                      const overridesForExpense =
+                        expenseOverrides?.[String(expense.id)] ?? expenseOverrides?.[expense.id] ?? {};
+                      return (
+                        <tr
+                          key={`expense-override-${expense.id}`}
+                          className="bg-white border-b border-gray-200"
+                        >
+                          <td className="p-3 pl-8 text-sm font-medium text-red-900 border-r border-gray-200">
+                            {expense.name}
+                          </td>
+                          {calculations.proformaYears.map((year, yearIndex) => {
+                            const value = Number(expense.yearValues?.[yearIndex]) || 0;
+                            const hasOverride =
+                              overridesForExpense &&
+                              Object.prototype.hasOwnProperty.call(overridesForExpense, yearIndex);
+                            const baseInputClasses =
+                              'w-full rounded border px-2 py-1 text-right text-sm transition focus:outline-none focus:ring-2';
+                            const stateClasses = hasOverride
+                              ? 'border-amber-400 bg-amber-50 text-amber-900 font-semibold focus:ring-amber-200'
+                              : 'border-gray-300 bg-white text-gray-800 focus:ring-blue-200';
+                            const disabledClasses = calculations.useExpenseRatioOverride
+                              ? 'cursor-not-allowed opacity-60'
+                              : 'hover:border-blue-400';
+
+                            return (
+                              <td
+                                key={`expense-${expense.id}-year-${year.year}`}
+                                className="p-2 text-right border-r border-gray-200"
+                              >
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="100"
+                                  inputMode="decimal"
+                                  value={Number.isFinite(value) ? value : 0}
+                                  onChange={(event) =>
+                                    handleExpenseOverrideChange(
+                                      expense.id,
+                                      yearIndex,
+                                      event.target.value === ''
+                                        ? null
+                                        : Number(event.target.value)
+                                    )
+                                  }
+                                  disabled={calculations.useExpenseRatioOverride}
+                                  className={`${baseInputClasses} ${stateClasses} ${disabledClasses}`}
+                                  title={formatCurrency(value)}
+                                />
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                    {calculations.useExpenseRatioOverride && (
+                      <tr className="bg-red-100/60 border-b border-gray-200">
+                        <td
+                          colSpan={calculations.proformaYears.length + 1}
+                          className="p-3 text-xs font-semibold text-red-700 text-center"
+                        >
+                          Expense ratio override is active. Manual year-by-year edits are disabled until the ratio is cleared; totals currently reflect the ratio override.
+                        </td>
+                      </tr>
+                    )}
+                    {Array.isArray(calculations.managementFeeProjection) &&
+                      calculations.managementFeeProjection.length > 0 && (
+                        <tr className="bg-red-50 border-b border-gray-200">
+                          <td className="p-3 pl-8 text-sm font-semibold text-red-800 border-r border-gray-200">
+                            Management Fee ({managementPercent}%)
+                          </td>
+                          {calculations.proformaYears.map((year, yearIndex) => (
+                            <td
+                              key={`management-fee-${year.year}`}
+                              className="p-3 text-right text-sm font-medium text-red-700 border-r border-gray-200"
+                            >
+                              {formatCurrency(
+                                Number(
+                                  calculations.managementFeeProjection?.[yearIndex] ?? 0
+                                )
+                              )}
+                            </td>
+                          ))}
+                        </tr>
+                      )}
                     <tr className="bg-blue-100 border-b-2 border-blue-600">
                       <td className="p-4 font-bold text-gray-900 border-r border-gray-300">Net Operating Income</td>
                       {calculations.proformaYears.map((year) => (

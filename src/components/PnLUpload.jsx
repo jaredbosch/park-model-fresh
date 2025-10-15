@@ -71,13 +71,14 @@ function buildRowId(section, index, label) {
   return `${section}-${index}-${label}`;
 }
 
-function exportAsJson(rows) {
+function exportAsJson(rows, notes = {}) {
   const payload = rows.map((row) => ({
     section: row.section,
     originalLabel: row.originalLabel,
     mappedCategory: row.mappedCategory,
     customLabel: row.customLabel,
     amount: row.amount,
+    note: notes[row.id] || '',
   }));
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: 'application/json',
@@ -152,11 +153,13 @@ const MappingRow = ({
   row,
   onChangeCategory,
   onChangeLabel,
+  onChangeNote,
+  noteValue,
   categoryOptions,
 }) => {
   const isUnmapped = row.mappedCategory === UNMAPPED_OPTION;
   const rowClassName = [
-    'grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 rounded-lg border p-4 text-sm transition-colors duration-200',
+    'grid grid-cols-[minmax(0,2.25fr)_minmax(0,1.35fr)_minmax(0,0.9fr)] gap-4 rounded-lg border p-4 text-sm transition-colors duration-200',
     isUnmapped
       ? 'border-amber-400/50 bg-slate-800/70 hover:bg-slate-800'
       : 'border-slate-700 bg-slate-900 hover:bg-slate-900/80',
@@ -174,29 +177,43 @@ const MappingRow = ({
           placeholder="Rename line item"
         />
         <p className="text-xs text-gray-400">Adjust the label that will appear in your P&amp;L.</p>
+        <div className="self-center">
+          <label className="mb-1 block text-xs font-semibold text-slate-300">
+            Map To Category
+          </label>
+          <select
+            value={row.mappedCategory}
+            onChange={(event) => onChangeCategory(row.id, event.target.value)}
+            className="w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
+          >
+            <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
+            {categoryOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="flex flex-col justify-center gap-1">
+        <label className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+          Notes
+        </label>
+        <input
+          type="text"
+          value={noteValue || ''}
+          onChange={(event) => onChangeNote(row.id, event.target.value)}
+          placeholder="Add note..."
+          title={noteValue || ''}
+          className="group w-full min-w-[9rem] max-w-[14rem] truncate rounded-md border border-slate-700 bg-slate-950/70 px-2 py-1 text-sm text-slate-200 placeholder:text-slate-500 transition-[max-width,background-color,border-color] duration-150 ease-in-out focus:max-w-none focus:border-blue-400 focus:bg-slate-900 focus:shadow focus:outline-none hover:max-w-none"
+        />
+        <p className="text-xs text-slate-500">Keep track of adjustments or caveats.</p>
       </div>
       <div className="self-center text-right text-base font-semibold text-indigo-200">
         ${row.amount.toLocaleString(undefined, {
           minimumFractionDigits: 0,
           maximumFractionDigits: 0,
         })}
-      </div>
-      <div className="self-center">
-        <label className="mb-1 block text-xs font-semibold text-slate-300">
-          Map To Category
-        </label>
-        <select
-          value={row.mappedCategory}
-          onChange={(event) => onChangeCategory(row.id, event.target.value)}
-          className="w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
-        >
-          <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
-          {categoryOptions.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
       </div>
     </div>
   );
@@ -227,6 +244,7 @@ const PnLUpload = ({
   const [totals, setTotals] = useState({ totalIncome: 0, totalExpenses: 0, netIncome: 0 });
   const [selectAllIncome, setSelectAllIncome] = useState(UNMAPPED_OPTION);
   const [selectAllExpense, setSelectAllExpense] = useState(UNMAPPED_OPTION);
+  const [lineItemNotes, setLineItemNotes] = useState({});
   const cacheRef = useRef({});
 
   useEffect(() => {
@@ -326,6 +344,35 @@ const PnLUpload = ({
       setSourceExpenseItems(normaliseItems(items));
     }
   }, [applyCachedMapping]);
+
+  const handleNoteChange = useCallback((id, note) => {
+    setLineItemNotes((previous) => ({ ...previous, [id]: note }));
+  }, []);
+
+  useEffect(() => {
+    setLineItemNotes((previous) => {
+      if (!previous || typeof previous !== 'object') {
+        return previous;
+      }
+      const validIds = new Set([
+        ...incomeRows.map((row) => row.id),
+        ...expenseRows.map((row) => row.id),
+      ]);
+      let changed = false;
+      const next = {};
+      Object.entries(previous).forEach(([key, value]) => {
+        if (validIds.has(key)) {
+          next[key] = value;
+        } else {
+          changed = true;
+        }
+      });
+      if (!changed && Object.keys(next).length === Object.keys(previous).length) {
+        return previous;
+      }
+      return next;
+    });
+  }, [expenseRows, incomeRows]);
 
   const handleUploadClick = useCallback(() => {
     if (!loading && fileInputRef.current) {
@@ -620,6 +667,7 @@ const PnLUpload = ({
         label,
         name: label,
         amount: safeAmount,
+        note: lineItemNotes[row.id] || '',
         editable: true,
       };
     };
@@ -653,6 +701,7 @@ const PnLUpload = ({
   }, [
     expenseRows,
     incomeRows,
+    lineItemNotes,
     onApplyMapping,
     persistTrainingExamples,
     resolvedTotals,
@@ -662,8 +711,8 @@ const PnLUpload = ({
   ]);
 
   const handleExport = useCallback(() => {
-    exportAsJson([...incomeRows, ...expenseRows]);
-  }, [expenseRows, incomeRows]);
+    exportAsJson([...incomeRows, ...expenseRows], lineItemNotes);
+  }, [expenseRows, incomeRows, lineItemNotes]);
 
   return (
     <Fragment>
@@ -788,6 +837,8 @@ const PnLUpload = ({
                       row={row}
                       onChangeCategory={handleChangeCategory}
                       onChangeLabel={handleChangeLabel}
+                      onChangeNote={handleNoteChange}
+                      noteValue={lineItemNotes[row.id]}
                       categoryOptions={incomeCategories}
                     />
                   ))}
@@ -834,6 +885,8 @@ const PnLUpload = ({
                       row={row}
                       onChangeCategory={handleChangeCategory}
                       onChangeLabel={handleChangeLabel}
+                      onChangeNote={handleNoteChange}
+                      noteValue={lineItemNotes[row.id]}
                       categoryOptions={expenseCategories}
                     />
                   ))}
