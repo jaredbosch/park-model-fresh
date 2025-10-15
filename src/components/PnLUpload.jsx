@@ -124,21 +124,24 @@ const MappingRow = ({
 }) => {
   const isUnmapped = row.mappedCategory === UNMAPPED_OPTION;
   const rowClassName = [
-    'grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 rounded-lg border p-4 text-sm text-gray-100 transition-colors hover:bg-slate-800/90',
-    isUnmapped ? 'border-amber-500/40 bg-amber-500/10' : 'border-slate-700 bg-slate-800/70',
+    'grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 rounded-lg border p-4 text-sm transition-colors duration-200',
+    isUnmapped
+      ? 'border-amber-400/50 bg-slate-800/70 hover:bg-slate-800'
+      : 'border-slate-700 bg-slate-900 hover:bg-slate-900/80',
   ].join(' ');
 
   return (
     <div className={rowClassName}>
-      <div className="space-y-1">
-        <div className="font-semibold text-gray-100">{row.originalLabel}</div>
+      <div className="space-y-2">
+        <div className="font-medium text-gray-100">{row.originalLabel}</div>
         <input
           type="text"
           value={row.customLabel}
           onChange={(event) => onChangeLabel(row.id, event.target.value)}
-          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-gray-100 placeholder:text-slate-500 focus:border-blue-400 focus:outline-none"
+          className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-gray-100 placeholder:text-slate-500 focus:border-blue-400 focus:outline-none"
           placeholder="Rename line item"
         />
+        <p className="text-xs text-gray-400">Adjust the label that will appear in your P&amp;L.</p>
       </div>
       <div className="self-center text-right text-base font-semibold text-indigo-200">
         ${row.amount.toLocaleString(undefined, {
@@ -153,7 +156,7 @@ const MappingRow = ({
         <select
           value={row.mappedCategory}
           onChange={(event) => onChangeCategory(row.id, event.target.value)}
-          className="w-full rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
+          className="w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
         >
           <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
           {categoryOptions.map((option) => (
@@ -420,30 +423,42 @@ const PnLUpload = ({
     cacheRef.current = nextCache;
     persistCachedMappings(nextCache);
 
-    const buildLineItem = (row, prefix) => {
+    const buildLineItem = (row, section) => {
       const numericAmount = Number(row.amount);
+      const safeAmount = Number.isFinite(numericAmount) ? numericAmount : 0;
+      const label = row.customLabel?.trim() || row.originalLabel;
+      const wasUnmapped = row.mappedCategory === UNMAPPED_OPTION;
+      const category = wasUnmapped
+        ? section === 'income'
+          ? 'Other Income'
+          : 'Other Expense'
+        : row.mappedCategory;
+
       return {
-        id: createUniqueId(prefix),
-        label: row.customLabel?.trim() || row.originalLabel,
-        originalLabel: row.originalLabel,
+        id: createUniqueId(section),
+        section,
+        category,
         mappedCategory: row.mappedCategory,
-        amount: Number.isFinite(numericAmount) ? numericAmount : 0,
-        section: row.section,
+        originalLabel: row.originalLabel,
+        label,
+        name: label,
+        amount: safeAmount,
         editable: true,
-        isMapped: row.mappedCategory !== UNMAPPED_OPTION,
+        wasUnmapped,
       };
     };
 
     const incomeLines = incomeRows.map((row) => buildLineItem(row, 'income'));
     const expenseLines = expenseRows.map((row) => buildLineItem(row, 'expense'));
 
-    const mappedIncome = incomeLines.filter((line) => line.isMapped);
-    const unmappedIncome = incomeLines.filter((line) => !line.isMapped);
-    const mappedExpense = expenseLines.filter((line) => line.isMapped);
-    const unmappedExpense = expenseLines.filter((line) => !line.isMapped);
+    const mappedIncome = incomeLines.filter((line) => !line.wasUnmapped);
+    const unmappedIncome = incomeLines.filter((line) => line.wasUnmapped);
+    const mappedExpense = expenseLines.filter((line) => !line.wasUnmapped);
+    const unmappedExpense = expenseLines.filter((line) => line.wasUnmapped);
 
     const lotRentTotal = mappedIncome.reduce((sum, line) => {
-      return line.mappedCategory === 'Lot Rent' ? sum + line.amount : sum;
+      const candidate = line.mappedCategory === UNMAPPED_OPTION ? line.category : line.mappedCategory;
+      return candidate === 'Lot Rent' ? sum + line.amount : sum;
     }, 0);
 
     if (typeof onApplyMapping === 'function') {
@@ -462,7 +477,7 @@ const PnLUpload = ({
       });
     }
 
-    showToast({ message: '✅ Mapping applied successfully', tone: 'success' });
+    showToast({ message: '✅ P&L mapping applied successfully', tone: 'success' });
     setModalOpen(false);
     setCompletionMessage('');
   }, [
@@ -543,41 +558,41 @@ const PnLUpload = ({
 
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-slate-900 text-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
-              <h2 className="text-xl font-semibold">Map P&L Line Items</h2>
-              <div className="flex items-center gap-2 text-xs text-slate-300">
-                <div>
+          <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-slate-950 text-gray-100 shadow-2xl ring-1 ring-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950/80 px-6 py-4">
+              <h2 className="text-xl font-semibold text-gray-50">Map P&L Line Items</h2>
+              <div className="flex items-center gap-3 text-xs text-gray-300">
+                <div className="font-medium">
                   {stats.totalMapped} mapped • {stats.totalUnmapped} unmapped • {stats.coverage}% coverage
                 </div>
                 <button
                   type="button"
                   onClick={handleExport}
-                  className="rounded border border-slate-600 px-2 py-1 text-xs font-semibold text-slate-200 transition hover:bg-slate-800"
+                  className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-gray-100 transition-colors hover:bg-slate-800"
                 >
                   Export Mapping
                 </button>
               </div>
             </div>
 
-            <div className="space-y-6 overflow-y-auto px-6 py-4">
+            <div className="space-y-6 overflow-y-auto px-6 py-6">
               <section className="space-y-4">
                 <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <h3 className="text-lg font-semibold text-blue-200">Income</h3>
-                    <p className="text-xs text-slate-300">
+                    <p className="text-xs text-gray-400">
                       Assign each income line to a category or keep it unmapped.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <label className="text-xs font-semibold text-slate-400" htmlFor="select-all-income">
+                    <label className="text-xs font-semibold text-gray-400" htmlFor="select-all-income">
                       Select All
                     </label>
                     <select
                       id="select-all-income"
                       value={selectAllIncome}
                       onChange={(event) => handleSelectAllIncome(event.target.value)}
-                      className="rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-slate-100 focus:border-blue-400 focus:outline-none"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
                     >
                       <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
                       {incomeCategories.map((option) => (
@@ -591,7 +606,7 @@ const PnLUpload = ({
 
                 <div className="space-y-3">
                   {incomeRows.length === 0 && (
-                    <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4 text-sm text-slate-300">
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4 text-sm text-gray-300">
                       No income line items detected.
                     </div>
                   )}
@@ -611,19 +626,19 @@ const PnLUpload = ({
                 <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <h3 className="text-lg font-semibold text-rose-200">Expenses</h3>
-                    <p className="text-xs text-slate-300">
+                    <p className="text-xs text-gray-400">
                       Tag operating expenses for better benchmarking.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <label className="text-xs font-semibold text-slate-400" htmlFor="select-all-expense">
+                    <label className="text-xs font-semibold text-gray-400" htmlFor="select-all-expense">
                       Select All
                     </label>
                     <select
                       id="select-all-expense"
                       value={selectAllExpense}
                       onChange={(event) => handleSelectAllExpense(event.target.value)}
-                      className="rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-slate-100 focus:border-blue-400 focus:outline-none"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
                     >
                       <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
                       {expenseCategories.map((option) => (
@@ -637,7 +652,7 @@ const PnLUpload = ({
 
                 <div className="space-y-3">
                   {expenseRows.length === 0 && (
-                    <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-4 text-sm text-slate-300">
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/70 p-4 text-sm text-gray-300">
                       No expense line items detected.
                     </div>
                   )}
@@ -654,46 +669,45 @@ const PnLUpload = ({
               </section>
             </div>
 
-            <footer className="sticky bottom-0 border-t border-slate-800 bg-slate-900/95 px-6 py-4 backdrop-blur">
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div className="space-y-1 text-sm text-gray-100">
-                  <div>
-                    Total Income:{' '}
-                    <span className="font-semibold text-blue-200">
+            <footer className="sticky bottom-0 bg-slate-950">
+              <div className="border-t border-slate-700 px-6 py-4">
+                <div className="grid gap-2 text-sm text-gray-100 md:grid-cols-3">
+                  <div className="flex flex-col">
+                    <span className="text-xs uppercase tracking-wide text-gray-400">Total Income</span>
+                    <span className="text-base font-semibold text-blue-200">
                       ${totals.totalIncome.toLocaleString()}
                     </span>
                   </div>
-                  <div>
-                    Total Expenses:{' '}
-                    <span className="font-semibold text-rose-200">
+                  <div className="flex flex-col">
+                    <span className="text-xs uppercase tracking-wide text-gray-400">Total Expenses</span>
+                    <span className="text-base font-semibold text-rose-200">
                       ${totals.totalExpenses.toLocaleString()}
                     </span>
                   </div>
-                  <div>
-                    Net Income:{' '}
-                    <span className="font-semibold text-emerald-200">
+                  <div className="flex flex-col">
+                    <span className="text-xs uppercase tracking-wide text-gray-400">Net Income</span>
+                    <span className="text-base font-semibold text-emerald-200">
                       ${totals.netIncome.toLocaleString()}
                     </span>
                   </div>
                 </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    onClick={() => {
-                      setCompletionMessage('');
-                      handleCloseModal();
-                    }}
-                    className="border border-slate-600 bg-slate-800 text-gray-100 hover:bg-slate-700"
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={applyMapping}
-                    className="bg-indigo-600 px-6 py-2 text-white shadow hover:bg-indigo-500"
-                  >
-                    Accept Mapping
-                  </Button>
-                </div>
+              </div>
+              <div className="sticky bottom-0 flex justify-end gap-3 bg-slate-950 border-t border-slate-700 p-4">
+                <button
+                  className="px-5 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-gray-200"
+                  onClick={() => {
+                    setCompletionMessage('');
+                    handleCloseModal();
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="px-6 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
+                  onClick={applyMapping}
+                >
+                  Accept Mapping
+                </button>
               </div>
             </footer>
           </div>

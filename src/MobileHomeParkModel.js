@@ -782,33 +782,37 @@ const MobileHomeParkModel = () => {
           ? expenseLines
           : [...toArray(mappedExpense), ...toArray(unmappedExpense)];
 
-      const resolvedMappedIncome =
-        toArray(mappedIncome).length > 0
-          ? toArray(mappedIncome)
-          : resolvedIncomeLines.filter(
-              (item) => (item?.mappedCategory ?? item?.category) !== UNMAPPED_PNL_LABEL
-            );
+      const partitionByMapping = (items, section) => {
+        const mapped = [];
+        const unmapped = [];
 
-      const resolvedUnmappedIncome =
-        toArray(unmappedIncome).length > 0
-          ? toArray(unmappedIncome)
-          : resolvedIncomeLines.filter(
-              (item) => (item?.mappedCategory ?? item?.category) === UNMAPPED_PNL_LABEL
-            );
+        items.forEach((item, index) => {
+          const candidate = item ?? {};
+          const resolvedCategory = candidate.mappedCategory ?? candidate.category;
+          const isUnmapped =
+            candidate.wasUnmapped === true || resolvedCategory === UNMAPPED_PNL_LABEL;
 
-      const resolvedMappedExpense =
-        toArray(mappedExpense).length > 0
-          ? toArray(mappedExpense)
-          : resolvedExpenseLines.filter(
-              (item) => (item?.mappedCategory ?? item?.category) !== UNMAPPED_PNL_LABEL
-            );
+          const enriched = {
+            ...candidate,
+            section,
+            wasUnmapped: isUnmapped,
+          };
 
-      const resolvedUnmappedExpense =
-        toArray(unmappedExpense).length > 0
-          ? toArray(unmappedExpense)
-          : resolvedExpenseLines.filter(
-              (item) => (item?.mappedCategory ?? item?.category) === UNMAPPED_PNL_LABEL
-            );
+          if (isUnmapped) {
+            if (!enriched.category) {
+              enriched.category = section === 'income' ? 'Other Income' : 'Other Expense';
+            }
+            unmapped.push(enriched);
+          } else {
+            mapped.push(enriched);
+          }
+        });
+
+        return { mapped, unmapped };
+      };
+
+      const incomePartition = partitionByMapping(resolvedIncomeLines, 'income');
+      const expensePartition = partitionByMapping(resolvedExpenseLines, 'expense');
 
       const normaliseAmount = (value) => {
         const numeric = Number(value);
@@ -824,6 +828,7 @@ const MobileHomeParkModel = () => {
           amount: normaliseAmount(item?.amount),
           originalLabel: item?.originalLabel ?? label,
           mappedCategory: item?.mappedCategory ?? item?.category ?? UNMAPPED_PNL_LABEL,
+          category: item?.category ?? item?.mappedCategory ?? UNMAPPED_PNL_LABEL,
           editable: item?.editable !== false,
         };
       };
@@ -837,27 +842,40 @@ const MobileHomeParkModel = () => {
           amount: normaliseAmount(item?.amount),
           originalLabel: item?.originalLabel ?? label,
           mappedCategory: item?.mappedCategory ?? item?.category ?? UNMAPPED_PNL_LABEL,
+          category: item?.category ?? item?.mappedCategory ?? UNMAPPED_PNL_LABEL,
           editable: item?.editable !== false,
         };
       };
 
-      const lotRentEntries = resolvedMappedIncome.filter(
-        (row) => (row?.mappedCategory ?? row?.category) === 'Lot Rent'
-      );
+      const lotRentEntries = incomePartition.mapped.filter((row) => {
+        const resolvedCategory =
+          row?.mappedCategory === UNMAPPED_PNL_LABEL ? row?.category : row?.mappedCategory;
+        return resolvedCategory === 'Lot Rent';
+      });
 
       const lotRentTotal =
         Number.isFinite(Number(derived?.lotRentTotal))
           ? Number(derived.lotRentTotal)
           : lotRentEntries.reduce((sum, row) => sum + normaliseAmount(row?.amount), 0);
 
-      const otherIncomeItems = resolvedMappedIncome.filter(
-        (row) => (row?.mappedCategory ?? row?.category) !== 'Lot Rent'
-      );
+      const editableIncomeItems = [
+        ...incomePartition.mapped.filter((row) => {
+          const resolvedCategory =
+            row?.mappedCategory === UNMAPPED_PNL_LABEL ? row?.category : row?.mappedCategory;
+          return resolvedCategory !== 'Lot Rent';
+        }),
+        ...incomePartition.unmapped,
+      ];
 
-      setAdditionalIncome(otherIncomeItems.map(mapIncomeItem));
-      setUnmappedIncomeItems(resolvedUnmappedIncome.map(mapIncomeItem));
-      setExpenses(resolvedMappedExpense.map(mapExpenseItem));
-      setUnmappedExpenseItems(resolvedUnmappedExpense.map(mapExpenseItem));
+      const editableExpenseItems = [
+        ...expensePartition.mapped,
+        ...expensePartition.unmapped,
+      ];
+
+      setAdditionalIncome(editableIncomeItems.map(mapIncomeItem));
+      setUnmappedIncomeItems(incomePartition.unmapped.map(mapIncomeItem));
+      setExpenses(editableExpenseItems.map(mapExpenseItem));
+      setUnmappedExpenseItems(expensePartition.unmapped.map(mapExpenseItem));
 
       if (lotRentTotal > 0) {
         setUseActualIncome(true);
