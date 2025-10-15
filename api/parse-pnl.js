@@ -110,21 +110,21 @@ function extractFallbackRows(text) {
     const value = extractLastNumericValue(line);
     if (value === null) continue;
 
-    // Remove everything after the first long number sequence to isolate the label
-    const accountMatch = line.match(/^\s*(\d{3,4})/);
-    let label = line.replace(/\d{2,}.*$/, '').trim();
-    if (!label) {
-      // fallback: remove everything after the last space before the number
-      const idx = line.lastIndexOf(' ');
-      label = idx > 0 ? line.slice(0, idx).trim() : line.trim();
-    }
+    // 🧼 CLEAN: strip all trailing numeric/decimal groups
+    const cleanLine = line
+      .replace(/\d+[.,\d\s-]+$/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
 
-    // Skip if the label still looks numeric noise
-    if (!label || !/[A-Za-z]/.test(label)) continue;
-
+    // Detect account number prefix
+    const accountMatch = cleanLine.match(/^\s*(\d{3,4})/);
+    let label = cleanLine;
     if (accountMatch && !label.startsWith(accountMatch[1])) {
       label = `${accountMatch[1]} ${label}`.trim();
     }
+
+    // Skip if label doesn’t contain letters (avoid numeric noise)
+    if (!/[A-Za-z]/.test(label)) continue;
 
     rows.push({ label, amount: value });
   }
