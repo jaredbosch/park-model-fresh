@@ -2459,6 +2459,11 @@ const MobileHomeParkModel = () => {
 
     const proformaYears = calculateProforma();
     const firstYearData = proformaYears[0] || null;
+    const yearSevenData =
+      proformaYears.find((entry) => entry.year === 7) ||
+      (proformaYears.length > 0 ? proformaYears[proformaYears.length - 1] : null);
+    const year7NOI =
+      yearSevenData && Number.isFinite(yearSevenData.noi) ? yearSevenData.noi : noi;
 
     const annualDebtService = firstYearData?.debtService ?? firstYearDebtService;
     const monthlyPayment = firstYearData ? firstYearData.debtService / 12 : firstMonthPayment;
@@ -2473,8 +2478,9 @@ const MobileHomeParkModel = () => {
 
     // IRR Calculation
     const holdPeriod = Number(irrInputs.holdPeriod) || 0;
-    const exitCapRate = irrInputs.exitCapRate / 100;
-    const exitValue = exitCapRate > 0 ? noi / exitCapRate : 0;
+    const exitCapRatePercent = Number(irrInputs.exitCapRate) || 0;
+    const exitValue =
+      exitCapRatePercent > 0 ? year7NOI / (exitCapRatePercent / 100) : 0;
 
     const monthsHeld = Math.round(holdPeriod * 12);
     let remainingBalanceAtExit = loanAmount;
@@ -2488,25 +2494,23 @@ const MobileHomeParkModel = () => {
       }
     }
 
-    const exitProceeds = exitValue - remainingBalanceAtExit;
-    const totalCashInvested = downPayment;
+    const remainingLoanBalance = remainingBalanceAtExit;
+    const netExitProceeds = exitValue - remainingLoanBalance;
+    const initialInvestment = downPayment;
 
-    const calculateIRR = () => {
-      if (holdPeriod <= 0) {
+    const defaultAnnualCashFlow = firstYearData ? firstYearData.cashFlow : cashFlow;
+    const annualCashFlows = [];
+    for (let year = 1; year <= holdPeriod; year += 1) {
+      const yearData =
+        proformaYears.find((entry) => entry.year === year) ||
+        (proformaYears.length > 0 ? proformaYears[Math.min(year - 1, proformaYears.length - 1)] : null);
+      const yearCashFlow = yearData ? yearData.cashFlow : defaultAnnualCashFlow;
+      annualCashFlows.push(yearCashFlow);
+    }
+
+    const calculateIRR = (cashFlows) => {
+      if (!Array.isArray(cashFlows) || cashFlows.length === 0) {
         return 0;
-      }
-
-      const cashFlows = [-totalCashInvested];
-      for (let year = 1; year <= holdPeriod; year += 1) {
-        const index = Math.min(year - 1, proformaYears.length - 1);
-        const yearData = index >= 0 ? proformaYears[index] : null;
-        const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
-
-        if (year < holdPeriod) {
-          cashFlows.push(yearCashFlow);
-        } else {
-          cashFlows.push(yearCashFlow + exitProceeds);
-        }
       }
 
       let rate = 0.1;
@@ -2518,8 +2522,13 @@ const MobileHomeParkModel = () => {
         let dnpv = 0;
 
         for (let j = 0; j < cashFlows.length; j += 1) {
-          npv += cashFlows[j] / Math.pow(1 + rate, j);
-          dnpv -= j * cashFlows[j] / Math.pow(1 + rate, j + 1);
+          const cashFlowValue = cashFlows[j];
+          npv += cashFlowValue / Math.pow(1 + rate, j);
+          dnpv -= j * cashFlowValue / Math.pow(1 + rate, j + 1);
+        }
+
+        if (dnpv === 0) {
+          return rate * 100;
         }
 
         const newRate = rate - npv / dnpv;
@@ -2538,22 +2547,16 @@ const MobileHomeParkModel = () => {
       return rate * 100;
     };
 
-    const irr = calculateIRR();
+    const irr =
+      holdPeriod > 0
+        ? calculateIRR([-initialInvestment, ...annualCashFlows, netExitProceeds])
+        : 0;
 
-    const distributions = [];
-    for (let year = 1; year <= holdPeriod; year += 1) {
-      const index = Math.min(year - 1, proformaYears.length - 1);
-      const yearData = index >= 0 ? proformaYears[index] : null;
-      const yearCashFlow = yearData ? yearData.cashFlow : cashFlow;
-      if (year === holdPeriod) {
-        distributions.push(yearCashFlow + exitProceeds);
-      } else {
-        distributions.push(yearCashFlow);
-      }
-    }
-
-    const totalCashReceived = distributions.reduce((sum, value) => sum + value, 0);
-    const equityMultiple = totalCashInvested > 0 ? totalCashReceived / totalCashInvested : 0;
+    const cumulativeCashFlow = annualCashFlows.reduce((sum, value) => sum + value, 0);
+    const equityMultiple =
+      initialInvestment > 0
+        ? (netExitProceeds + cumulativeCashFlow) / initialInvestment
+        : 0;
 
     return {
       totalUnits,
@@ -2583,8 +2586,8 @@ const MobileHomeParkModel = () => {
       expensePerUnit,
       noiPerUnit,
       exitValue,
-      remainingBalance: remainingBalanceAtExit,
-      exitProceeds,
+      remainingBalance: remainingLoanBalance,
+      exitProceeds: netExitProceeds,
       irr,
       equityMultiple,
       proformaYears,
@@ -2653,8 +2656,6 @@ const MobileHomeParkModel = () => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0
     }).format(value);
   };
 
