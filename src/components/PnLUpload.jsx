@@ -190,6 +190,8 @@ const PnLUpload = ({
   const [modalOpen, setModalOpen] = useState(false);
   const [incomeRows, setIncomeRows] = useState([]);
   const [expenseRows, setExpenseRows] = useState([]);
+  const [sourceIncomeItems, setSourceIncomeItems] = useState([]);
+  const [sourceExpenseItems, setSourceExpenseItems] = useState([]);
   const [totals, setTotals] = useState({ totalIncome: 0, totalExpenses: 0, netIncome: 0 });
   const [selectAllIncome, setSelectAllIncome] = useState(UNMAPPED_OPTION);
   const [selectAllExpense, setSelectAllExpense] = useState(UNMAPPED_OPTION);
@@ -276,10 +278,20 @@ const PnLUpload = ({
       };
     });
 
+    const normaliseItems = (list) =>
+      Array.isArray(list)
+        ? list.map((item) => ({
+            label: typeof item?.label === 'string' ? item.label.trim() : '',
+            amount: Number(item?.amount) || 0,
+          }))
+        : [];
+
     if (section === 'income') {
       setIncomeRows(nextRows);
+      setSourceIncomeItems(normaliseItems(items));
     } else {
       setExpenseRows(nextRows);
+      setSourceExpenseItems(normaliseItems(items));
     }
   }, [applyCachedMapping]);
 
@@ -399,6 +411,99 @@ const PnLUpload = ({
     setExpenseRows((rows) => rows.map((row) => ({ ...row, mappedCategory: value })));
   }, []);
 
+  const incomeMappingLookup = useMemo(() => {
+    const mapping = {};
+    incomeRows.forEach((row) => {
+      if (!row?.originalLabel) {
+        return;
+      }
+      const key = row.originalLabel.trim();
+      if (!key) {
+        return;
+      }
+      if (row.mappedCategory && row.mappedCategory !== UNMAPPED_OPTION) {
+        mapping[key] = row.mappedCategory;
+      } else if (row.customLabel && row.customLabel.trim() && row.customLabel.trim() !== key) {
+        mapping[key] = row.customLabel.trim();
+      }
+    });
+    return mapping;
+  }, [incomeRows]);
+
+  const expenseMappingLookup = useMemo(() => {
+    const mapping = {};
+    expenseRows.forEach((row) => {
+      if (!row?.originalLabel) {
+        return;
+      }
+      const key = row.originalLabel.trim();
+      if (!key) {
+        return;
+      }
+      if (row.mappedCategory && row.mappedCategory !== UNMAPPED_OPTION) {
+        mapping[key] = row.mappedCategory;
+      } else if (row.customLabel && row.customLabel.trim() && row.customLabel.trim() !== key) {
+        mapping[key] = row.customLabel.trim();
+      }
+    });
+    return mapping;
+  }, [expenseRows]);
+
+  const applyMappings = useCallback((items, mapping) => {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [];
+    }
+
+    const grouped = {};
+    items.forEach((item) => {
+      if (!item || typeof item !== 'object') {
+        return;
+      }
+      const rawLabel = typeof item.label === 'string' ? item.label.trim() : '';
+      if (!rawLabel) {
+        return;
+      }
+      const numericAmount = Number(item.amount);
+      if (!Number.isFinite(numericAmount)) {
+        return;
+      }
+      const key = (mapping && mapping[rawLabel]) || rawLabel;
+      if (!grouped[key]) {
+        grouped[key] = 0;
+      }
+      grouped[key] += numericAmount;
+    });
+
+    return Object.entries(grouped).map(([label, amount]) => ({ label, amount }));
+  }, []);
+
+  const mappedIncomeItems = useMemo(
+    () => applyMappings(sourceIncomeItems, incomeMappingLookup),
+    [applyMappings, incomeMappingLookup, sourceIncomeItems]
+  );
+
+  const mappedExpenseItems = useMemo(
+    () => applyMappings(sourceExpenseItems, expenseMappingLookup),
+    [applyMappings, expenseMappingLookup, sourceExpenseItems]
+  );
+
+  const resolvedTotals = useMemo(() => {
+    const hasMappedValues = mappedIncomeItems.length > 0 || mappedExpenseItems.length > 0;
+    if (!hasMappedValues) {
+      return totals;
+    }
+
+    const totalIncome = mappedIncomeItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    const totalExpenses = mappedExpenseItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    const netIncome = totalIncome - totalExpenses;
+
+    return {
+      totalIncome: Math.round(totalIncome),
+      totalExpenses: Math.round(totalExpenses),
+      netIncome: Math.round(netIncome),
+    };
+  }, [mappedExpenseItems, mappedIncomeItems, totals]);
+
   const stats = useMemo(() => {
     const incomeMapped = incomeRows.filter((row) => row.mappedCategory !== UNMAPPED_OPTION).length;
     const expenseMapped = expenseRows.filter((row) => row.mappedCategory !== UNMAPPED_OPTION).length;
@@ -492,11 +597,14 @@ const PnLUpload = ({
       return line.category === 'Lot Rent' ? sum + line.amount : sum;
     }, 0);
 
+    const totalsForParent =
+      resolvedTotals || totals || { totalIncome: 0, totalExpenses: 0, netIncome: 0 };
+
     if (typeof onApplyMapping === 'function') {
       onApplyMapping({
         incomeLines,
         expenseLines,
-        totals,
+        totals: totalsForParent,
         stats,
         derived: {
           lotRentTotal,
@@ -508,7 +616,16 @@ const PnLUpload = ({
     setModalOpen(false);
     setCompletionMessage('');
     persistTrainingExamples(payloadRows);
-  }, [expenseRows, incomeRows, onApplyMapping, persistTrainingExamples, showToast, stats, totals]);
+  }, [
+    expenseRows,
+    incomeRows,
+    onApplyMapping,
+    persistTrainingExamples,
+    resolvedTotals,
+    showToast,
+    stats,
+    totals,
+  ]);
 
   const handleExport = useCallback(() => {
     exportAsJson([...incomeRows, ...expenseRows]);
@@ -688,6 +805,61 @@ const PnLUpload = ({
                   ))}
                 </div>
               </section>
+
+              {(mappedIncomeItems.length > 0 || mappedExpenseItems.length > 0) && (
+                <section className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+                  <div className="flex flex-col gap-1">
+                    <h3 className="text-lg font-semibold text-gray-100">Preview: Totals by Category</h3>
+                    <p className="text-xs text-gray-400">
+                      These values reflect your current mappings and will populate the P&amp;L editor once you accept the mapping.
+                    </p>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-semibold uppercase tracking-wide text-blue-200">Income</h4>
+                      {mappedIncomeItems.length === 0 ? (
+                        <div className="rounded-md border border-slate-800 bg-slate-900/80 px-3 py-2 text-xs text-gray-400">
+                          No mapped income categories yet.
+                        </div>
+                      ) : (
+                        <table className="w-full table-fixed text-sm">
+                          <tbody>
+                            {mappedIncomeItems.map((item) => (
+                              <tr key={`income-${item.label}`} className="border-b border-slate-800/70 last:border-none">
+                                <td className="py-2 pr-3 font-medium text-gray-100">{item.label}</td>
+                                <td className="py-2 text-right font-semibold text-blue-200">
+                                  ${Number(item.amount ?? 0).toLocaleString()}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-semibold uppercase tracking-wide text-rose-200">Expenses</h4>
+                      {mappedExpenseItems.length === 0 ? (
+                        <div className="rounded-md border border-slate-800 bg-slate-900/80 px-3 py-2 text-xs text-gray-400">
+                          No mapped expense categories yet.
+                        </div>
+                      ) : (
+                        <table className="w-full table-fixed text-sm">
+                          <tbody>
+                            {mappedExpenseItems.map((item) => (
+                              <tr key={`expense-${item.label}`} className="border-b border-slate-800/70 last:border-none">
+                                <td className="py-2 pr-3 font-medium text-gray-100">{item.label}</td>
+                                <td className="py-2 text-right font-semibold text-rose-200">
+                                  ${Number(item.amount ?? 0).toLocaleString()}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
             </div>
 
             <footer className="sticky bottom-0 bg-slate-950">
@@ -696,19 +868,25 @@ const PnLUpload = ({
                   <div className="flex flex-col">
                     <span className="text-xs uppercase tracking-wide text-gray-400">Total Income</span>
                     <span className="text-base font-semibold text-blue-200">
-                      ${totals.totalIncome.toLocaleString()}
+                      ${
+                        (resolvedTotals?.totalIncome ?? 0).toLocaleString()
+                      }
                     </span>
                   </div>
                   <div className="flex flex-col">
                     <span className="text-xs uppercase tracking-wide text-gray-400">Total Expenses</span>
                     <span className="text-base font-semibold text-rose-200">
-                      ${totals.totalExpenses.toLocaleString()}
+                      ${
+                        (resolvedTotals?.totalExpenses ?? 0).toLocaleString()
+                      }
                     </span>
                   </div>
                   <div className="flex flex-col">
                     <span className="text-xs uppercase tracking-wide text-gray-400">Net Income</span>
                     <span className="text-base font-semibold text-emerald-200">
-                      ${totals.netIncome.toLocaleString()}
+                      ${
+                        (resolvedTotals?.netIncome ?? 0).toLocaleString()
+                      }
                     </span>
                   </div>
                 </div>
