@@ -323,7 +323,7 @@ const PnLUpload = ({
         }
 
         const { data, metadata } = payload;
-        if (!data?.income || !data?.expense) {
+        if (!data?.income || !(data?.expense || data?.expenses)) {
           throw new Error('Parser did not return income and expense data.');
         }
 
