@@ -17,6 +17,77 @@ const MONTH_HEADERS = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)$/i;
 const SUMMARY_TERMS = /(total|subtotal|grand|net)/i;
 const SUMMARY_COLUMN = /^(ytd|total|grand\s+total)$/i;
 
+function normalizeText(rawText = '') {
+  return rawText
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
+function extractFallbackRows(text) {
+  const rows = [];
+  if (!text) {
+    return rows;
+  }
+
+  const lines = text.split('\n');
+  for (const line of lines) {
+    if (!line || line.length < 5) {
+      continue;
+    }
+
+    const match = line.match(
+      /^([A-Za-z0-9\s&().\/-]+)\s+([-$]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)$/
+    );
+    if (!match) {
+      continue;
+    }
+
+    const label = match[1].trim();
+    const amount = Number.parseFloat(match[2].replace(/[^0-9.-]/g, ''));
+    if (!label || Number.isNaN(amount)) {
+      continue;
+    }
+
+    rows.push({ label, amount });
+  }
+
+  return rows;
+}
+
+function buildFallbackResult(fallbackRows) {
+  const incomeItems = {};
+  const expenseItems = {};
+
+  for (const { label, amount } of fallbackRows) {
+    if (/^4\d{3}/.test(label)) {
+      incomeItems[label] = (incomeItems[label] || 0) + amount;
+    } else {
+      expenseItems[label] = (expenseItems[label] || 0) + amount;
+    }
+  }
+
+  const incomeTotal = Object.values(incomeItems).reduce((sum, value) => sum + value, 0);
+  const expenseTotal = Object.values(expenseItems).reduce((sum, value) => sum + value, 0);
+
+  return {
+    income: {
+      individual_items: incomeItems,
+      total_income: incomeTotal,
+    },
+    expense: {
+      individual_items: expenseItems,
+      total_expense: expenseTotal,
+    },
+    other_expense: {
+      individual_items: {},
+      total_other_expense: 0,
+    },
+    net_income: incomeTotal - expenseTotal,
+  };
+}
+
 function isMonthColumn(text) {
   if (!text) {
     return false;
@@ -343,6 +414,50 @@ export default async function handler(req, res) {
       return;
     }
 
+    text = normalizeText(text);
+
+    if (text.split('\n').length < 5) {
+      console.warn('⚠️ Detected short or malformed P&L text, forcing OCR fallback');
+      const ocrText = await performOcrFallback(file);
+      if (ocrText && ocrText.length > 0) {
+        text = normalizeText(ocrText);
+      }
+    }
+
+    const fallbackRows = extractFallbackRows(text);
+
+    if (fallbackRows.length > 10) {
+      console.log('✅ Using fallback extraction, skipping OpenAI call');
+      const parsed = buildFallbackResult(fallbackRows);
+
+      const metadata = {
+        income_items: Object.keys(parsed.income.individual_items).length,
+        expense_items: Object.keys(parsed.expense.individual_items).length,
+        other_expense_items: Object.keys(parsed.other_expense.individual_items).length,
+        source_filename: filename,
+        extraction_strategy: 'fallback-regex',
+      };
+
+      if (supabase) {
+        try {
+          await supabase.from('parsed_pnls').insert({
+            filename,
+            parsed_json: parsed,
+            metadata,
+            parsed_at: new Date().toISOString(),
+            model_used: 'fallback-regex',
+          });
+        } catch (storageError) {
+          console.error('Unable to persist parsed P&L payload:', storageError);
+        }
+      } else {
+        console.warn('Supabase client not available; skipping parsed P&L persistence.');
+      }
+
+      res.status(200).json({ success: true, data: parsed, metadata });
+      return;
+    }
+
     const parsed = parsePnlText(text);
 
     const incomeCount = Object.keys(parsed.income.individual_items).length;
@@ -350,6 +465,37 @@ export default async function handler(req, res) {
     const otherExpenseCount = Object.keys(parsed.other_expense.individual_items).length;
 
     if (incomeCount === 0 && expenseCount === 0 && otherExpenseCount === 0) {
+      if (fallbackRows.length > 0) {
+        console.warn('⚠️ Structured parser returned no rows; using fallback extraction instead.');
+        const fallbackParsed = buildFallbackResult(fallbackRows);
+        const metadata = {
+          income_items: Object.keys(fallbackParsed.income.individual_items).length,
+          expense_items: Object.keys(fallbackParsed.expense.individual_items).length,
+          other_expense_items: Object.keys(fallbackParsed.other_expense.individual_items).length,
+          source_filename: filename,
+          extraction_strategy: 'fallback-regex',
+        };
+
+        if (supabase) {
+          try {
+            await supabase.from('parsed_pnls').insert({
+              filename,
+              parsed_json: fallbackParsed,
+              metadata,
+              parsed_at: new Date().toISOString(),
+              model_used: 'fallback-regex',
+            });
+          } catch (storageError) {
+            console.error('Unable to persist parsed P&L payload:', storageError);
+          }
+        } else {
+          console.warn('Supabase client not available; skipping parsed P&L persistence.');
+        }
+
+        res.status(200).json({ success: true, data: fallbackParsed, metadata });
+        return;
+      }
+
       res.status(422).json({ success: false, error: 'No valid P&L line items detected.' });
       return;
     }
