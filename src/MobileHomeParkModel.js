@@ -351,8 +351,7 @@ const DEFAULT_EXPENSES = [
 
 const normaliseNoteValue = (value) => {
   if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed;
+    return value;
   }
 
   if (typeof value === 'number' && Number.isFinite(value)) {

@@ -122,7 +122,7 @@ const parseReportState = (rawValue) => {
 
 const normaliseLineItemNote = (value) => {
   if (typeof value === 'string') {
-    return value.trim();
+    return value;
   }
 
   if (typeof value === 'number' && Number.isFinite(value)) {
