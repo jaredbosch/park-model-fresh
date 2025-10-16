@@ -500,6 +500,7 @@ const MobileHomeParkModel = () => {
   const [managementPercent, setManagementPercent] = useState(5);
   const [expenseRatio, setExpenseRatio] = useState(0);
   const [expenseOverrides, setExpenseOverrides] = useState({});
+  const [showExpenseOverrides, setShowExpenseOverrides] = useState(false);
   const [pnlTotals, setPnlTotals] = useState(null);
   const [pnlMappingStats, setPnlMappingStats] = useState(null);
   const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
@@ -5183,105 +5184,127 @@ ${reportContent.innerHTML}
                       ))}
                     </tr>
                     {calculations.expenseProjections?.length > 0 && (
-                      <tr className="bg-red-100/40 border-b border-gray-200">
-                        <td className="p-3 text-xs font-semibold uppercase tracking-wide text-red-800 border-r border-gray-200">
-                          Expense Notes & Overrides
-                        </td>
-                        {calculations.proformaYears.map((year) => (
+                      <>
+                        <tr className="border-b border-gray-200">
                           <td
-                            key={`expense-heading-${year.year}`}
-                            className="p-3 text-xs text-center font-semibold text-red-700 border-r border-gray-200"
+                            colSpan={calculations.proformaYears.length + 1}
+                            className="p-0"
                           >
-                            Year {year.year}
-                          </td>
-                        ))}
-                      </tr>
-                    )}
-                    {calculations.expenseProjections?.map((expense) => {
-                      const overridesForExpense =
-                        expenseOverrides?.[String(expense.id)] ?? expenseOverrides?.[expense.id] ?? {};
-                      return (
-                        <tr
-                          key={`expense-override-${expense.id}`}
-                          className="bg-white border-b border-gray-200"
-                        >
-                          <td className="p-3 pl-8 text-sm font-medium text-red-900 border-r border-gray-200">
-                            {expense.name}
-                          </td>
-                          {calculations.proformaYears.map((year, yearIndex) => {
-                            const value = Number(expense.yearValues?.[yearIndex]) || 0;
-                            const hasOverride =
-                              overridesForExpense &&
-                              Object.prototype.hasOwnProperty.call(overridesForExpense, yearIndex);
-                            const baseInputClasses =
-                              'w-full rounded border px-2 py-1 text-right text-sm transition focus:outline-none focus:ring-2';
-                            const stateClasses = hasOverride
-                              ? 'border-amber-400 bg-amber-50 text-amber-900 font-semibold focus:ring-amber-200'
-                              : 'border-gray-300 bg-white text-gray-800 focus:ring-blue-200';
-                            const disabledClasses = calculations.useExpenseRatioOverride
-                              ? 'cursor-not-allowed opacity-60'
-                              : 'hover:border-blue-400';
-
-                            return (
-                              <td
-                                key={`expense-${expense.id}-year-${year.year}`}
-                                className="p-2 text-right border-r border-gray-200"
-                              >
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="100"
-                                  inputMode="decimal"
-                                  value={Number.isFinite(value) ? value : 0}
-                                  onChange={(event) =>
-                                    handleExpenseOverrideChange(
-                                      expense.id,
-                                      yearIndex,
-                                      event.target.value === ''
-                                        ? null
-                                        : Number(event.target.value)
-                                    )
-                                  }
-                                  disabled={calculations.useExpenseRatioOverride}
-                                  className={`${baseInputClasses} ${stateClasses} ${disabledClasses}`}
-                                  title={formatCurrency(value)}
-                                />
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })}
-                    {calculations.useExpenseRatioOverride && (
-                      <tr className="bg-red-100/60 border-b border-gray-200">
-                        <td
-                          colSpan={calculations.proformaYears.length + 1}
-                          className="p-3 text-xs font-semibold text-red-700 text-center"
-                        >
-                          Expense ratio override is active. Manual year-by-year edits are disabled until the ratio is cleared; totals currently reflect the ratio override.
-                        </td>
-                      </tr>
-                    )}
-                    {Array.isArray(calculations.managementFeeProjection) &&
-                      calculations.managementFeeProjection.length > 0 && (
-                        <tr className="bg-red-50 border-b border-gray-200">
-                          <td className="p-3 pl-8 text-sm font-semibold text-red-800 border-r border-gray-200">
-                            Management Fee ({managementPercent}%)
-                          </td>
-                          {calculations.proformaYears.map((year, yearIndex) => (
-                            <td
-                              key={`management-fee-${year.year}`}
-                              className="p-3 text-right text-sm font-medium text-red-700 border-r border-gray-200"
+                            <button
+                              type="button"
+                              aria-expanded={showExpenseOverrides}
+                              onClick={() => setShowExpenseOverrides((prev) => !prev)}
+                              className="flex w-full items-center justify-between bg-red-100 px-3 py-2 text-left font-semibold text-red-700"
                             >
-                              {formatCurrency(
-                                Number(
-                                  calculations.managementFeeProjection?.[yearIndex] ?? 0
-                                )
-                              )}
-                            </td>
-                          ))}
+                              <span>Expense Notes &amp; Overrides</span>
+                              <span>{showExpenseOverrides ? '▲' : '▼'}</span>
+                            </button>
+                          </td>
                         </tr>
-                      )}
+                        {showExpenseOverrides && (
+                          <>
+                            <tr className="bg-red-100/40 border-b border-gray-200">
+                              <td className="p-3 text-xs font-semibold uppercase tracking-wide text-red-800 border-r border-gray-200">
+                                Expense Notes &amp; Overrides
+                              </td>
+                              {calculations.proformaYears.map((year) => (
+                                <td
+                                  key={`expense-heading-${year.year}`}
+                                  className="p-3 text-xs text-center font-semibold text-red-700 border-r border-gray-200"
+                                >
+                                  Year {year.year}
+                                </td>
+                              ))}
+                            </tr>
+                            {calculations.expenseProjections?.map((expense) => {
+                              const overridesForExpense =
+                                expenseOverrides?.[String(expense.id)] ?? expenseOverrides?.[expense.id] ?? {};
+                              return (
+                                <tr
+                                  key={`expense-override-${expense.id}`}
+                                  className="bg-white border-b border-gray-200"
+                                >
+                                  <td className="p-3 pl-8 text-sm font-medium text-red-900 border-r border-gray-200">
+                                    {expense.name}
+                                  </td>
+                                  {calculations.proformaYears.map((year, yearIndex) => {
+                                    const value = Number(expense.yearValues?.[yearIndex]) || 0;
+                                    const hasOverride =
+                                      overridesForExpense &&
+                                      Object.prototype.hasOwnProperty.call(overridesForExpense, yearIndex);
+                                    const baseInputClasses =
+                                      'w-full rounded border px-2 py-1 text-right text-sm transition focus:outline-none focus:ring-2';
+                                    const stateClasses = hasOverride
+                                      ? 'border-amber-400 bg-amber-50 text-amber-900 font-semibold focus:ring-amber-200'
+                                      : 'border-gray-300 bg-white text-gray-800 focus:ring-blue-200';
+                                    const disabledClasses = calculations.useExpenseRatioOverride
+                                      ? 'cursor-not-allowed opacity-60'
+                                      : 'hover:border-blue-400';
+
+                                    return (
+                                      <td
+                                        key={`expense-${expense.id}-year-${year.year}`}
+                                        className="p-2 text-right border-r border-gray-200"
+                                      >
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="100"
+                                          inputMode="decimal"
+                                          value={Number.isFinite(value) ? value : 0}
+                                          onChange={(event) =>
+                                            handleExpenseOverrideChange(
+                                              expense.id,
+                                              yearIndex,
+                                              event.target.value === ''
+                                                ? null
+                                                : Number(event.target.value)
+                                            )
+                                          }
+                                          disabled={calculations.useExpenseRatioOverride}
+                                          className={`${baseInputClasses} ${stateClasses} ${disabledClasses}`}
+                                          title={formatCurrency(value)}
+                                        />
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                            {calculations.useExpenseRatioOverride && (
+                              <tr className="bg-red-100/60 border-b border-gray-200">
+                                <td
+                                  colSpan={calculations.proformaYears.length + 1}
+                                  className="p-3 text-xs font-semibold text-red-700 text-center"
+                                >
+                                  Expense ratio override is active. Manual year-by-year edits are disabled until the ratio is cleared; totals currently reflect the ratio override.
+                                </td>
+                              </tr>
+                            )}
+                            {Array.isArray(calculations.managementFeeProjection) &&
+                              calculations.managementFeeProjection.length > 0 && (
+                                <tr className="bg-red-50 border-b border-gray-200">
+                                  <td className="p-3 pl-8 text-sm font-semibold text-red-800 border-r border-gray-200">
+                                    Management Fee ({managementPercent}%)
+                                  </td>
+                                  {calculations.proformaYears.map((year, yearIndex) => (
+                                    <td
+                                      key={`management-fee-${year.year}`}
+                                      className="p-3 text-right text-sm font-medium text-red-700 border-r border-gray-200"
+                                    >
+                                      {formatCurrency(
+                                        Number(
+                                          calculations.managementFeeProjection?.[yearIndex] ?? 0
+                                        )
+                                      )}
+                                    </td>
+                                  ))}
+                                </tr>
+                              )}
+                          </>
+                        )}
+                      </>
+                    )}
                     <tr className="bg-blue-100 border-b-2 border-blue-600">
                       <td className="p-4 font-bold text-gray-900 border-r border-gray-300">Net Operating Income</td>
                       {calculations.proformaYears.map((year) => (

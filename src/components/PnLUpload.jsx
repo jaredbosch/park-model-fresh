@@ -71,14 +71,14 @@ function buildRowId(section, index, label) {
   return `${section}-${index}-${label}`;
 }
 
-function exportAsJson(rows, notes = {}) {
+function exportAsJson(rows) {
   const payload = rows.map((row) => ({
     section: row.section,
     originalLabel: row.originalLabel,
     mappedCategory: row.mappedCategory,
     customLabel: row.customLabel,
     amount: row.amount,
-    note: notes[row.id] || '',
+    note: row.note || '',
   }));
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: 'application/json',
@@ -149,17 +149,10 @@ const ProgressBar = ({ progress, label, fading, showNotice }) => (
   </div>
 );
 
-const MappingRow = ({
-  row,
-  onChangeCategory,
-  onChangeLabel,
-  onChangeNote,
-  noteValue,
-  categoryOptions,
-}) => {
+const MappingRow = ({ row, onChangeCategory, onChangeLabel, onChangeNote, categoryOptions }) => {
   const isUnmapped = row.mappedCategory === UNMAPPED_OPTION;
   const rowClassName = [
-    'grid grid-cols-[minmax(0,2.25fr)_minmax(0,1.35fr)_minmax(0,0.9fr)] gap-4 rounded-lg border p-4 text-sm transition-colors duration-200',
+    'grid grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,0.7fr)] gap-4 rounded-lg border p-4 text-sm transition-colors duration-200',
     isUnmapped
       ? 'border-amber-400/50 bg-slate-800/70 hover:bg-slate-800'
       : 'border-slate-700 bg-slate-900 hover:bg-slate-900/80',
@@ -201,11 +194,11 @@ const MappingRow = ({
         </label>
         <input
           type="text"
-          value={noteValue || ''}
+          value={row.note || ''}
           onChange={(event) => onChangeNote(row.id, event.target.value)}
           placeholder="Add note..."
-          title={noteValue || ''}
-          className="group w-full min-w-[9rem] max-w-[14rem] truncate rounded-md border border-slate-700 bg-slate-950/70 px-2 py-1 text-sm text-slate-200 placeholder:text-slate-500 transition-[max-width,background-color,border-color] duration-150 ease-in-out focus:max-w-none focus:border-blue-400 focus:bg-slate-900 focus:shadow focus:outline-none hover:max-w-none"
+          title={row.note || ''}
+          className="note-input w-full max-w-[16rem] truncate rounded border border-slate-300 bg-slate-50 px-2 py-1 text-sm text-gray-700 placeholder:text-slate-400 transition focus:max-w-none focus:border-blue-500 focus:bg-white focus:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
         />
         <p className="text-xs text-slate-500">Keep track of adjustments or caveats.</p>
       </div>
@@ -244,7 +237,6 @@ const PnLUpload = ({
   const [totals, setTotals] = useState({ totalIncome: 0, totalExpenses: 0, netIncome: 0 });
   const [selectAllIncome, setSelectAllIncome] = useState(UNMAPPED_OPTION);
   const [selectAllExpense, setSelectAllExpense] = useState(UNMAPPED_OPTION);
-  const [lineItemNotes, setLineItemNotes] = useState({});
   const cacheRef = useRef({});
 
   useEffect(() => {
@@ -308,25 +300,34 @@ const PnLUpload = ({
     return cacheRef.current[cacheKey] || null;
   }, []);
 
-  const handleSetRows = useCallback((section, items, suggestions = {}) => {
-    const nextRows = items.map((item, index) => {
-      const rowId = buildRowId(section, index, item.label);
-      const cached = applyCachedMapping(section, item.label);
-      const suggestionKey = item.label ? item.label.toLowerCase() : '';
-      const suggestion = suggestions[suggestionKey];
-      const suggestedCategory = suggestion?.category;
-      return {
-        id: rowId,
-        section,
-        originalLabel: item.label,
-        customLabel: cached?.customLabel || item.label,
-        mappedCategory:
-          cached?.mappedCategory ||
-          (suggestedCategory ? suggestedCategory : UNMAPPED_OPTION),
-        amount: item.amount,
-        suggestionSource: suggestion?.source || null,
-      };
-    });
+  const handleSetRows = useCallback(
+    (section, items, suggestions = {}) => {
+      const previousRows = section === 'income' ? incomeRows : expenseRows;
+      const nextRows = items.map((item, index) => {
+        const rowId = buildRowId(section, index, item.label);
+        const cached = applyCachedMapping(section, item.label);
+        const suggestionKey = item.label ? item.label.toLowerCase() : '';
+        const suggestion = suggestions[suggestionKey];
+        const suggestedCategory = suggestion?.category;
+        const priorMatch = previousRows.find((row) => {
+          return (
+            row.originalLabel === item.label &&
+            Number(row.amount) === Number(item.amount)
+          );
+        });
+        return {
+          id: rowId,
+          section,
+          originalLabel: item.label,
+          customLabel: cached?.customLabel || item.label,
+          mappedCategory:
+            cached?.mappedCategory ||
+            (suggestedCategory ? suggestedCategory : UNMAPPED_OPTION),
+          amount: item.amount,
+          suggestionSource: suggestion?.source || null,
+          note: cached?.note || priorMatch?.note || '',
+        };
+      });
 
     const normaliseItems = (list) =>
       Array.isArray(list)
@@ -336,43 +337,21 @@ const PnLUpload = ({
           }))
         : [];
 
-    if (section === 'income') {
-      setIncomeRows(nextRows);
-      setSourceIncomeItems(normaliseItems(items));
-    } else {
-      setExpenseRows(nextRows);
-      setSourceExpenseItems(normaliseItems(items));
-    }
-  }, [applyCachedMapping]);
+      if (section === 'income') {
+        setIncomeRows(nextRows);
+        setSourceIncomeItems(normaliseItems(items));
+      } else {
+        setExpenseRows(nextRows);
+        setSourceExpenseItems(normaliseItems(items));
+      }
+    },
+    [applyCachedMapping, expenseRows, incomeRows]
+  );
 
   const handleNoteChange = useCallback((id, note) => {
-    setLineItemNotes((previous) => ({ ...previous, [id]: note }));
+    setIncomeRows((rows) => rows.map((row) => (row.id === id ? { ...row, note } : row)));
+    setExpenseRows((rows) => rows.map((row) => (row.id === id ? { ...row, note } : row)));
   }, []);
-
-  useEffect(() => {
-    setLineItemNotes((previous) => {
-      if (!previous || typeof previous !== 'object') {
-        return previous;
-      }
-      const validIds = new Set([
-        ...incomeRows.map((row) => row.id),
-        ...expenseRows.map((row) => row.id),
-      ]);
-      let changed = false;
-      const next = {};
-      Object.entries(previous).forEach(([key, value]) => {
-        if (validIds.has(key)) {
-          next[key] = value;
-        } else {
-          changed = true;
-        }
-      });
-      if (!changed && Object.keys(next).length === Object.keys(previous).length) {
-        return previous;
-      }
-      return next;
-    });
-  }, [expenseRows, incomeRows]);
 
   const handleUploadClick = useCallback(() => {
     if (!loading && fileInputRef.current) {
@@ -642,6 +621,7 @@ const PnLUpload = ({
       nextCache[key] = {
         mappedCategory: row.mappedCategory,
         customLabel: row.customLabel || row.originalLabel,
+        note: row.note || '',
       };
     });
     cacheRef.current = nextCache;
@@ -667,7 +647,7 @@ const PnLUpload = ({
         label,
         name: label,
         amount: safeAmount,
-        note: lineItemNotes[row.id] || '',
+        note: row.note || '',
         editable: true,
       };
     };
@@ -701,7 +681,6 @@ const PnLUpload = ({
   }, [
     expenseRows,
     incomeRows,
-    lineItemNotes,
     onApplyMapping,
     persistTrainingExamples,
     resolvedTotals,
@@ -711,8 +690,8 @@ const PnLUpload = ({
   ]);
 
   const handleExport = useCallback(() => {
-    exportAsJson([...incomeRows, ...expenseRows], lineItemNotes);
-  }, [expenseRows, incomeRows, lineItemNotes]);
+    exportAsJson([...incomeRows, ...expenseRows]);
+  }, [expenseRows, incomeRows]);
 
   return (
     <Fragment>
@@ -838,7 +817,6 @@ const PnLUpload = ({
                       onChangeCategory={handleChangeCategory}
                       onChangeLabel={handleChangeLabel}
                       onChangeNote={handleNoteChange}
-                      noteValue={lineItemNotes[row.id]}
                       categoryOptions={incomeCategories}
                     />
                   ))}
@@ -886,7 +864,6 @@ const PnLUpload = ({
                       onChangeCategory={handleChangeCategory}
                       onChangeLabel={handleChangeLabel}
                       onChangeNote={handleNoteChange}
-                      noteValue={lineItemNotes[row.id]}
                       categoryOptions={expenseCategories}
                     />
                   ))}
