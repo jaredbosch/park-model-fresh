@@ -16,7 +16,11 @@ import { useToast } from './components/ToastProvider';
 import RentRollUpload from './components/RentRollUpload';
 import PnLUpload from './components/PnLUpload';
 
-console.log('Supabase instance:', supabase);
+const isDevelopment = process.env.NODE_ENV === 'development';
+
+if (isDevelopment) {
+  console.log('Supabase instance:', supabase);
+}
 
 if (!supabase) {
   console.error('⚠️ Supabase client not initialized yet');
@@ -51,7 +55,9 @@ if (supabase && typeof supabase.auth !== 'undefined') {
     globalUser = session?.user || null;
 
     if (globalUser?.email) {
-      console.log(`✅ Supabase connected as ${globalUser.email}`);
+      if (isDevelopment) {
+        console.log(`✅ Supabase connected as ${globalUser.email}`);
+      }
     } else {
       console.warn('⚠️ No Supabase session found yet');
     }
