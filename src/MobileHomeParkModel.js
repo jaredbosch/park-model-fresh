@@ -351,7 +351,8 @@ const DEFAULT_EXPENSES = [
 
 const normaliseNoteValue = (value) => {
   if (typeof value === 'string') {
-    return value;
+    const trimmed = value.trim();
+    return trimmed;
   }
 
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -535,6 +536,7 @@ const MobileHomeParkModel = () => {
   const [expenseOverrides, setExpenseOverrides] = useState({});
   const [openIncomeNoteId, setOpenIncomeNoteId] = useState(null);
   const [openExpenseNoteId, setOpenExpenseNoteId] = useState(null);
+  const [showLineItemNotes, setShowLineItemNotes] = useState(true);
   const [showExpenseOverrides, setShowExpenseOverrides] = useState(false);
   const [pnlTotals, setPnlTotals] = useState(null);
   const [pnlMappingStats, setPnlMappingStats] = useState(null);
@@ -544,6 +546,8 @@ const MobileHomeParkModel = () => {
   const [projectionYears, setProjectionYears] = useState(5);
 
   const quickPopulateIdRef = useRef(2);
+  const lastIncomeNoteContextRef = useRef('summary');
+  const lastExpenseNoteContextRef = useRef('summary');
 
   const formatReportDate = useCallback((value) => {
     if (!value) {
@@ -2114,6 +2118,11 @@ const MobileHomeParkModel = () => {
     );
   }, []);
 
+  const toggleIncomeNoteEditor = useCallback((id, context) => {
+    lastIncomeNoteContextRef.current = context;
+    setOpenIncomeNoteId((current) => (current === id ? null : id));
+  }, []);
+
   const clearIncomeItems = useCallback(() => {
     if (additionalIncome.length === 0) {
       return;
@@ -2188,6 +2197,11 @@ const MobileHomeParkModel = () => {
         expense.id === id ? { ...expense, note: normaliseNoteValue(note) } : expense
       )
     );
+  }, []);
+
+  const toggleExpenseNoteEditor = useCallback((id, context) => {
+    lastExpenseNoteContextRef.current = context;
+    setOpenExpenseNoteId((current) => (current === id ? null : id));
   }, []);
 
   const clearExpenseItems = useCallback(() => {
@@ -4510,29 +4524,73 @@ ${reportContent.innerHTML}
                             No other income items yet.
                           </div>
                         )}
-                        {additionalIncome.map((item) => (
-                          <div key={item.id} className="flex items-center justify-between">
-                            <input
-                              type="text"
-                              value={item.name}
-                              onChange={(e) => updateIncomeItem(item.id, 'name', e.target.value)}
-                              className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
-                              placeholder="Income name"
-                            />
-                            <input
-                              type="number"
-                              value={item.amount}
-                              onChange={(e) => updateIncomeItem(item.id, 'amount', Number(e.target.value))}
-                              className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
-                            />
-                            <button
-                              onClick={() => removeIncomeItem(item.id)}
-                              className="ml-3 text-red-600 hover:text-red-800 font-semibold"
+                        {additionalIncome.map((item) => {
+                          const isEditingNote = openIncomeNoteId === item.id;
+                          return (
+                            <div
+                              key={item.id}
+                              className="space-y-2 rounded border border-green-100 bg-white p-3 shadow-sm"
                             >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="flex flex-1 flex-col gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={item.name}
+                                      onChange={(e) => updateIncomeItem(item.id, 'name', e.target.value)}
+                                      className="flex-1 rounded border border-gray-300 bg-blue-50 p-2 text-blue-900 font-semibold"
+                                      placeholder="Income name"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleIncomeNoteEditor(item.id, 'editor')}
+                                      className={`text-sm transition-colors ${
+                                        item.note
+                                          ? 'text-blue-500 hover:text-blue-600'
+                                          : 'text-gray-400 hover:text-blue-500'
+                                      }`}
+                                      title={item.note ? 'Edit note' : 'Add note'}
+                                    >
+                                      📝
+                                    </button>
+                                  </div>
+                                  {isEditingNote && (
+                                    <input
+                                      type="text"
+                                      placeholder="Add note..."
+                                      className={[
+                                        'w-full rounded border border-gray-300 bg-slate-50 px-2 py-1 text-xs text-gray-700',
+                                        'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                      ].join(' ')}
+                                      value={item.note || ''}
+                                      onChange={(e) => handleIncomeNoteEdit(item.id, e.target.value)}
+                                      onBlur={() => setOpenIncomeNoteId(null)}
+                                      autoFocus={lastIncomeNoteContextRef.current === 'editor'}
+                                    />
+                                  )}
+                                  {showLineItemNotes && item.note && !isEditingNote && (
+                                    <div className="pl-1 text-xs italic text-gray-600">{item.note}</div>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    value={item.amount}
+                                    onChange={(e) => updateIncomeItem(item.id, 'amount', Number(e.target.value))}
+                                    className="w-32 rounded border border-gray-300 bg-blue-50 p-2 text-right text-blue-900 font-semibold"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeIncomeItem(item.id)}
+                                    className="text-red-600 hover:text-red-800 font-semibold"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                         <div className="flex justify-between pt-2 border-t border-gray-200">
                           <span className="text-gray-700 font-semibold">Total Other Income</span>
                           <span className="font-bold text-green-700">{formatCurrency(calculations.totalAdditionalIncome)}</span>
@@ -4607,30 +4665,71 @@ ${reportContent.innerHTML}
                           ? expense.amount / calculations.totalUnits
                           : 0;
 
+                      const isEditingNote = openExpenseNoteId === expense.id;
+
                       return (
-                        <div key={expense.id} className="space-y-1">
-                          <div className="flex items-center justify-between">
-                            <input
-                              type="text"
-                              value={expense.name}
-                              onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
-                              className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
-                              placeholder="Expense name"
-                            />
-                            <input
-                              type="number"
-                              value={expense.amount}
-                              onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
-                              className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
-                            />
-                            <button
-                              onClick={() => removeExpenseItem(expense.id)}
-                              className="ml-3 text-red-600 hover:text-red-800 font-semibold"
-                            >
-                              Remove
-                            </button>
+                        <div
+                          key={expense.id}
+                          className="space-y-2 rounded border border-red-100 bg-white p-3 shadow-sm"
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="flex flex-1 flex-col gap-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={expense.name}
+                                  onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
+                                  className="flex-1 rounded border border-gray-300 bg-blue-50 p-2 text-blue-900 font-semibold"
+                                  placeholder="Expense name"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpenseNoteEditor(expense.id, 'editor')}
+                                  className={`text-sm transition-colors ${
+                                    expense.note
+                                      ? 'text-blue-500 hover:text-blue-600'
+                                      : 'text-gray-400 hover:text-blue-500'
+                                  }`}
+                                  title={expense.note ? 'Edit note' : 'Add note'}
+                                >
+                                  📝
+                                </button>
+                              </div>
+                              {isEditingNote && (
+                                <input
+                                  type="text"
+                                  placeholder="Add note..."
+                                  className={[
+                                    'w-full rounded border border-gray-300 bg-slate-50 px-2 py-1 text-xs text-gray-700',
+                                    'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                  ].join(' ')}
+                                  value={expense.note || ''}
+                                  onChange={(e) => handleExpenseNoteEdit(expense.id, e.target.value)}
+                                  onBlur={() => setOpenExpenseNoteId(null)}
+                                  autoFocus={lastExpenseNoteContextRef.current === 'editor'}
+                                />
+                              )}
+                              {showLineItemNotes && expense.note && !isEditingNote && (
+                                <div className="pl-1 text-xs italic text-gray-600">{expense.note}</div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                value={expense.amount}
+                                onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
+                                className="w-32 rounded border border-gray-300 bg-blue-50 p-2 text-right text-blue-900 font-semibold"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeExpenseItem(expense.id)}
+                                className="text-red-600 hover:text-red-800 font-semibold"
+                              >
+                                Remove
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex justify-end text-xs text-gray-600 italic mr-20">
+                          <div className="flex justify-end text-xs italic text-gray-600">
                             {formatCurrency(perLotAmount)} per lot/year
                           </div>
                         </div>
@@ -5664,8 +5763,19 @@ ${reportContent.innerHTML}
 
                 {/* Income Statement */}
                 <div className="mb-10">
-                  <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-300 pb-2 mb-4">Income Statement</h2>
-                  
+                  <div className="mb-4 flex flex-col gap-3 border-b-2 border-gray-300 pb-2 sm:flex-row sm:items-center sm:justify-between">
+                    <h2 className="text-2xl font-bold text-gray-900">Income Statement</h2>
+                    <label className="flex items-center gap-2 text-sm font-medium text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={showLineItemNotes}
+                        onChange={() => setShowLineItemNotes((previous) => !previous)}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Show Notes
+                    </label>
+                  </div>
+
                   <div className="mb-6">
                     <h3 className="text-lg font-bold text-gray-800 mb-3 bg-green-50 p-2">Income</h3>
                     <div className="pl-4 space-y-2">
@@ -5683,46 +5793,52 @@ ${reportContent.innerHTML}
                         <span className="text-gray-700 font-semibold">Lot Rent Income</span>
                         <span className="font-semibold">{formatCurrency(calculations.lotRentIncome)}</span>
                       </div>
-                      {additionalIncome.map((item) => (
-                        <div key={item.id} className="flex items-center justify-between py-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-800">{item.name}</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setOpenIncomeNoteId(
-                                  openIncomeNoteId === item.id ? null : item.id
-                                )
-                              }
-                              className={`text-sm transition-colors ${
-                                item.note ? 'text-blue-500 hover:text-blue-600' : 'text-gray-400 hover:text-blue-500'
-                              }`}
-                              title={item.note ? 'Edit note' : 'Add note'}
-                            >
-                              📝
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {openIncomeNoteId === item.id && (
-                              <input
-                                type="text"
-                                placeholder="Add note..."
-                                className={[
-                                  'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
-                                  'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
-                                ].join(' ')}
-                                value={item.note || ''}
-                                onChange={(e) => handleIncomeNoteEdit(item.id, e.target.value)}
-                                onBlur={() => setOpenIncomeNoteId(null)}
-                                autoFocus
-                              />
+                      {additionalIncome.map((item) => {
+                        const isEditingNote = openIncomeNoteId === item.id;
+                        return (
+                          <div key={item.id} className="py-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-gray-800">{item.name}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleIncomeNoteEditor(item.id, 'summary')}
+                                  className={`text-sm transition-colors ${
+                                    item.note
+                                      ? 'text-blue-500 hover:text-blue-600'
+                                      : 'text-gray-400 hover:text-blue-500'
+                                  }`}
+                                  title={item.note ? 'Edit note' : 'Add note'}
+                                >
+                                  📝
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {isEditingNote && (
+                                  <input
+                                    type="text"
+                                    placeholder="Add note..."
+                                    className={[
+                                      'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
+                                      'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                    ].join(' ')}
+                                    value={item.note || ''}
+                                    onChange={(e) => handleIncomeNoteEdit(item.id, e.target.value)}
+                                    onBlur={() => setOpenIncomeNoteId(null)}
+                                    autoFocus={lastIncomeNoteContextRef.current === 'summary'}
+                                  />
+                                )}
+                                <span className="font-semibold text-gray-800">
+                                  {formatCurrency(item.amount)}
+                                </span>
+                              </div>
+                            </div>
+                            {showLineItemNotes && item.note && (
+                              <div className="pl-6 text-xs italic text-gray-500">{item.note}</div>
                             )}
-                            <span className="font-semibold text-gray-800">
-                              {formatCurrency(item.amount)}
-                            </span>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                       <div className="flex justify-between py-2 border-t-2 border-green-600 font-bold text-green-700">
                         <span>Effective Gross Income</span>
                         <span>{formatCurrency(calculations.effectiveGrossIncome)}</span>
@@ -5733,48 +5849,52 @@ ${reportContent.innerHTML}
                   <div className="mb-6">
                     <h3 className="text-lg font-bold text-gray-800 mb-3 bg-red-50 p-2">Operating Expenses</h3>
                     <div className="pl-4 space-y-2">
-                      {expenses.map((expense) => (
-                        <div key={expense.id} className="flex items-center justify-between py-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-800">{expense.name}</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setOpenExpenseNoteId(
-                                  openExpenseNoteId === expense.id ? null : expense.id
-                                )
-                              }
-                              className={`text-sm transition-colors ${
-                                expense.note
-                                  ? 'text-blue-500 hover:text-blue-600'
-                                  : 'text-gray-400 hover:text-blue-500'
-                              }`}
-                              title={expense.note ? 'Edit note' : 'Add note'}
-                            >
-                              📝
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {openExpenseNoteId === expense.id && (
-                              <input
-                                type="text"
-                                placeholder="Add note..."
-                                className={[
-                                  'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
-                                  'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
-                                ].join(' ')}
-                                value={expense.note || ''}
-                                onChange={(e) => handleExpenseNoteEdit(expense.id, e.target.value)}
-                                onBlur={() => setOpenExpenseNoteId(null)}
-                                autoFocus
-                              />
+                      {expenses.map((expense) => {
+                        const isEditingNote = openExpenseNoteId === expense.id;
+                        return (
+                          <div key={expense.id} className="py-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-gray-800">{expense.name}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpenseNoteEditor(expense.id, 'summary')}
+                                  className={`text-sm transition-colors ${
+                                    expense.note
+                                      ? 'text-blue-500 hover:text-blue-600'
+                                      : 'text-gray-400 hover:text-blue-500'
+                                  }`}
+                                  title={expense.note ? 'Edit note' : 'Add note'}
+                                >
+                                  📝
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {isEditingNote && (
+                                  <input
+                                    type="text"
+                                    placeholder="Add note..."
+                                    className={[
+                                      'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
+                                      'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                    ].join(' ')}
+                                    value={expense.note || ''}
+                                    onChange={(e) => handleExpenseNoteEdit(expense.id, e.target.value)}
+                                    onBlur={() => setOpenExpenseNoteId(null)}
+                                    autoFocus={lastExpenseNoteContextRef.current === 'summary'}
+                                  />
+                                )}
+                                <span className="font-semibold text-gray-800">
+                                  {formatCurrency(expense.amount)}
+                                </span>
+                              </div>
+                            </div>
+                            {showLineItemNotes && expense.note && (
+                              <div className="pl-6 text-xs italic text-gray-500">{expense.note}</div>
                             )}
-                            <span className="font-semibold text-gray-800">
-                              {formatCurrency(expense.amount)}
-                            </span>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                       <div className="flex justify-between py-1">
                         <span className="text-gray-700">Management Fee ({managementPercent}%)</span>
                         <span className="font-semibold">{formatCurrency(calculations.managementFee)}</span>

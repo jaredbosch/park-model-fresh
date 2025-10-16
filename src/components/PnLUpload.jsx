@@ -91,6 +91,44 @@ function exportAsJson(rows) {
   URL.revokeObjectURL(url);
 }
 
+function exportAsCsv(rows) {
+  const header = ['Section', 'Category', 'Label', 'Amount', 'Note'];
+  const lines = [header.join(',')];
+
+  const escapeValue = (value) => {
+    if (value === null || value === undefined) {
+      return '';
+    }
+
+    const text = String(value);
+    if (/[",\n]/.test(text)) {
+      return `"${text.replace(/"/g, '""')}"`;
+    }
+
+    return text;
+  };
+
+  rows.forEach((row) => {
+    const section = row.section === 'income' ? 'Income' : row.section === 'expense' ? 'Expense' : '';
+    const category = row.mappedCategory === UNMAPPED_OPTION ? '' : row.mappedCategory || '';
+    const label = row.customLabel || row.originalLabel || '';
+    const amount = Number.isFinite(Number(row.amount)) ? Number(row.amount) : '';
+    const note = row.note || '';
+
+    lines.push(
+      [section, category, label, amount, note].map(escapeValue).join(',')
+    );
+  });
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'pnl-mapping.csv';
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function createUniqueId(prefix = 'pnl-line') {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -689,8 +727,12 @@ const PnLUpload = ({
     totals,
   ]);
 
-  const handleExport = useCallback(() => {
+  const handleExportJson = useCallback(() => {
     exportAsJson([...incomeRows, ...expenseRows]);
+  }, [expenseRows, incomeRows]);
+
+  const handleExportCsv = useCallback(() => {
+    exportAsCsv([...incomeRows, ...expenseRows]);
   }, [expenseRows, incomeRows]);
 
   return (
@@ -765,13 +807,22 @@ const PnLUpload = ({
                 <div className="font-medium">
                   {stats.totalMapped} mapped • {stats.totalUnmapped} unmapped • {stats.coverage}% coverage
                 </div>
-                <button
-                  type="button"
-                  onClick={handleExport}
-                  className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-gray-100 transition-colors hover:bg-slate-800"
-                >
-                  Export Mapping
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleExportJson}
+                    className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-gray-100 transition-colors hover:bg-slate-800"
+                  >
+                    Export JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportCsv}
+                    className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-gray-100 transition-colors hover:bg-slate-800"
+                  >
+                    Export CSV
+                  </button>
+                </div>
               </div>
             </div>
 
