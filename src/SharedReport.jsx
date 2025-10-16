@@ -218,6 +218,25 @@ const SharedReport = () => {
 
   const reportState = useMemo(() => parseReportState(report?.report_state), [report]);
 
+  const expenseRatioActive = useMemo(() => {
+    const directRatio = Number(reportState?.expenseRatio);
+    if (Number.isFinite(directRatio) && directRatio > 0) {
+      return true;
+    }
+
+    const calculationsOverride = reportState?.calculations?.useExpenseRatioOverride;
+    if (typeof calculationsOverride === 'boolean') {
+      return calculationsOverride;
+    }
+
+    const calculatedRatio = Number(reportState?.calculations?.expenseRatio);
+    if (Number.isFinite(calculatedRatio) && calculatedRatio > 0) {
+      return true;
+    }
+
+    return false;
+  }, [reportState]);
+
   const incomeItems = useMemo(() => {
     const items = Array.isArray(reportState?.additionalIncome)
       ? reportState.additionalIncome
@@ -253,6 +272,16 @@ const SharedReport = () => {
       };
     });
   }, [reportState]);
+
+  const expenseItemsForDisplay = useMemo(
+    () => (expenseRatioActive ? [] : expenseItems),
+    [expenseRatioActive, expenseItems]
+  );
+
+  const showIncomeExpenseSection = useMemo(
+    () => incomeItems.length > 0 || expenseItems.length > 0 || expenseRatioActive,
+    [incomeItems, expenseItems, expenseRatioActive]
+  );
 
   const derivedMetrics = useMemo(() => {
     if (!report) {
@@ -388,7 +417,7 @@ const SharedReport = () => {
               </div>
             </div>
 
-            {(incomeItems.length > 0 || expenseItems.length > 0) && (
+            {showIncomeExpenseSection && (
               <>
                 <div className="border-t border-slate-200 px-6 py-4">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -428,27 +457,36 @@ const SharedReport = () => {
                     </div>
                   )}
 
-                  {expenseItems.length > 0 && (
-                    <div className="rounded-lg border border-rose-100 bg-rose-50/40 p-4">
-                      <h3 className="text-sm font-semibold uppercase tracking-wide text-rose-600">Expenses</h3>
-                      <table className="mt-3 w-full border-collapse text-sm">
-                        <tbody>
-                          {expenseItems.map((item) => (
-                            <tr key={item.id} className="border-b border-rose-100 last:border-0">
-                              <td className="py-2 pr-4 align-top">
-                                <div className="font-medium text-slate-800">{item.label}</div>
-                                {showNotes && item.note && (
-                                  <div className="mt-1 text-xs italic text-slate-500">{item.note}</div>
-                                )}
-                              </td>
-                              <td className="py-2 text-right align-top font-semibold text-rose-700">
-                                {formatCurrency(item.amount)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                  {expenseRatioActive ? (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600 sm:col-span-2">
+                      <p className="font-medium text-red-700">Flat Expense Ratio Applied</p>
+                      <p className="mt-1">
+                        Individual expense items are hidden. Totals and NOI reflect the flat expense ratio currently in use.
+                      </p>
                     </div>
+                  ) : (
+                    expenseItemsForDisplay.length > 0 && (
+                      <div className="rounded-lg border border-rose-100 bg-rose-50/40 p-4">
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-rose-600">Expenses</h3>
+                        <table className="mt-3 w-full border-collapse text-sm">
+                          <tbody>
+                            {expenseItemsForDisplay.map((item) => (
+                              <tr key={item.id} className="border-b border-rose-100 last:border-0">
+                                <td className="py-2 pr-4 align-top">
+                                  <div className="font-medium text-slate-800">{item.label}</div>
+                                  {showNotes && item.note && (
+                                    <div className="mt-1 text-xs italic text-slate-500">{item.note}</div>
+                                  )}
+                                </td>
+                                <td className="py-2 text-right align-top font-semibold text-rose-700">
+                                  {formatCurrency(item.amount)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
                   )}
                 </div>
               </>

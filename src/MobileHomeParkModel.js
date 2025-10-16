@@ -2821,6 +2821,8 @@ const MobileHomeParkModel = () => {
     projectionYears,
   ]);
 
+  const expenseRatioActive = Boolean(calculations?.useExpenseRatioOverride);
+
   const averageRentInfo = useMemo(() => {
     if (!Array.isArray(units) || units.length === 0) {
       return { value: null, hasValues: false };
@@ -4650,12 +4652,12 @@ ${reportContent.innerHTML}
                       </button>
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    <div className="bg-white p-4 rounded border border-red-200">
-                      <label className="font-semibold text-gray-800" htmlFor="expense-ratio">
-                        Expense Ratio (%)
-                      </label>
-                      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                    <div className="space-y-3">
+                      <div className="bg-white p-4 rounded border border-red-200">
+                        <label className="font-semibold text-gray-800" htmlFor="expense-ratio">
+                          Expense Ratio (%)
+                        </label>
+                        <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                         <input
                           id="expense-ratio"
                           type="number"
@@ -4669,7 +4671,15 @@ ${reportContent.innerHTML}
                         <span className="text-sm text-gray-500">Overrides detailed expense inputs.</span>
                       </div>
                     </div>
-                    {expenses.map((expense) => {
+                    {expenseRatioActive && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm">
+                        <p className="font-medium text-red-700">Flat Expense Ratio Applied</p>
+                        <p className="mt-1 text-red-600">
+                          Individual expense items are hidden. Totals and NOI reflect the flat expense ratio currently in use.
+                        </p>
+                      </div>
+                    )}
+                    {!expenseRatioActive && expenses.map((expense) => {
                       const perLotAmount =
                         calculations.totalUnits > 0
                           ? expense.amount / calculations.totalUnits
@@ -4745,7 +4755,7 @@ ${reportContent.innerHTML}
                         </div>
                       );
                     })}
-                    {expenses.length === 0 && (
+                    {!expenseRatioActive && expenses.length === 0 && (
                       <div className="rounded border border-red-200 bg-red-100 px-3 py-2 text-sm text-red-900">
                         No expense line items yet.
                       </div>
