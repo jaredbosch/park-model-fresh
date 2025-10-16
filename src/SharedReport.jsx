@@ -99,12 +99,46 @@ const extractAverageRent = (rentRoll) => {
   return total / rentValues.length;
 };
 
+const parseReportState = (rawValue) => {
+  if (!rawValue) {
+    return null;
+  }
+
+  if (typeof rawValue === 'object') {
+    return rawValue;
+  }
+
+  if (typeof rawValue === 'string') {
+    try {
+      return JSON.parse(rawValue);
+    } catch (error) {
+      console.warn('Unable to parse report_state JSON for shared report:', error);
+      return null;
+    }
+  }
+
+  return null;
+};
+
+const normaliseLineItemNote = (value) => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return '';
+};
+
 const SharedReport = () => {
   const [searchParams] = useSearchParams();
   const reportId = searchParams.get('id');
   const [loading, setLoading] = useState(true);
   const [report, setReport] = useState(null);
   const [error, setError] = useState('');
+  const [showNotes, setShowNotes] = useState(true);
 
   useEffect(() => {
     let isMounted = true;
@@ -145,6 +179,7 @@ const SharedReport = () => {
               'cap_rate',
               'noi',
               'rent_roll',
+              'report_state',
             ].join(', ')
           )
           .eq('id', reportId)
@@ -180,6 +215,73 @@ const SharedReport = () => {
       isMounted = false;
     };
   }, [reportId]);
+
+  const reportState = useMemo(() => parseReportState(report?.report_state), [report]);
+
+  const expenseRatioActive = useMemo(() => {
+    const directRatio = Number(reportState?.expenseRatio);
+    if (Number.isFinite(directRatio) && directRatio > 0) {
+      return true;
+    }
+
+    const calculationsOverride = reportState?.calculations?.useExpenseRatioOverride;
+    if (typeof calculationsOverride === 'boolean') {
+      return calculationsOverride;
+    }
+
+    const calculatedRatio = Number(reportState?.calculations?.expenseRatio);
+    if (Number.isFinite(calculatedRatio) && calculatedRatio > 0) {
+      return true;
+    }
+
+    return false;
+  }, [reportState]);
+
+  const incomeItems = useMemo(() => {
+    const items = Array.isArray(reportState?.additionalIncome)
+      ? reportState.additionalIncome
+      : [];
+
+    return items.map((item, index) => {
+      const rawLabel = item?.name ?? item?.label ?? '';
+      const label = typeof rawLabel === 'string' ? rawLabel.trim() : String(rawLabel || `Income ${index + 1}`);
+      const amount = Number(item?.amount);
+
+      return {
+        id: item?.id ?? `${label || 'income'}-${index}`,
+        label: label || `Income ${index + 1}`,
+        amount: Number.isFinite(amount) ? amount : 0,
+        note: normaliseLineItemNote(item?.note),
+      };
+    });
+  }, [reportState]);
+
+  const expenseItems = useMemo(() => {
+    const items = Array.isArray(reportState?.expenses) ? reportState.expenses : [];
+
+    return items.map((item, index) => {
+      const rawLabel = item?.name ?? item?.label ?? '';
+      const label = typeof rawLabel === 'string' ? rawLabel.trim() : String(rawLabel || `Expense ${index + 1}`);
+      const amount = Number(item?.amount);
+
+      return {
+        id: item?.id ?? `${label || 'expense'}-${index}`,
+        label: label || `Expense ${index + 1}`,
+        amount: Number.isFinite(amount) ? amount : 0,
+        note: normaliseLineItemNote(item?.note),
+      };
+    });
+  }, [reportState]);
+
+  const expenseItemsForDisplay = useMemo(
+    () => (expenseRatioActive ? [] : expenseItems),
+    [expenseRatioActive, expenseItems]
+  );
+
+  const showIncomeExpenseSection = useMemo(
+    () => incomeItems.length > 0 || expenseItems.length > 0 || expenseRatioActive,
+    [incomeItems, expenseItems, expenseRatioActive]
+  );
 
   const derivedMetrics = useMemo(() => {
     if (!report) {
@@ -314,6 +416,81 @@ const SharedReport = () => {
                 </span>
               </div>
             </div>
+
+            {showIncomeExpenseSection && (
+              <>
+                <div className="border-t border-slate-200 px-6 py-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <h2 className="text-lg font-semibold text-slate-900">Income &amp; Expenses</h2>
+                    <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        checked={showNotes}
+                        onChange={() => setShowNotes((value) => !value)}
+                      />
+                      Show Notes
+                    </label>
+                  </div>
+                </div>
+                <div className="grid gap-6 px-6 pb-6 sm:grid-cols-2">
+                  {incomeItems.length > 0 && (
+                    <div className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-4">
+                      <h3 className="text-sm font-semibold uppercase tracking-wide text-emerald-600">Income</h3>
+                      <table className="mt-3 w-full border-collapse text-sm">
+                        <tbody>
+                          {incomeItems.map((item) => (
+                            <tr key={item.id} className="border-b border-emerald-100 last:border-0">
+                              <td className="py-2 pr-4 align-top">
+                                <div className="font-medium text-slate-800">{item.label}</div>
+                                {showNotes && item.note && (
+                                  <div className="mt-1 text-xs italic text-slate-500">{item.note}</div>
+                                )}
+                              </td>
+                              <td className="py-2 text-right align-top font-semibold text-emerald-700">
+                                {formatCurrency(item.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {expenseRatioActive ? (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600 sm:col-span-2">
+                      <p className="font-medium text-red-700">Flat Expense Ratio Applied</p>
+                      <p className="mt-1">
+                        Individual expense items are hidden. Totals and NOI reflect the flat expense ratio currently in use.
+                      </p>
+                    </div>
+                  ) : (
+                    expenseItemsForDisplay.length > 0 && (
+                      <div className="rounded-lg border border-rose-100 bg-rose-50/40 p-4">
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-rose-600">Expenses</h3>
+                        <table className="mt-3 w-full border-collapse text-sm">
+                          <tbody>
+                            {expenseItemsForDisplay.map((item) => (
+                              <tr key={item.id} className="border-b border-rose-100 last:border-0">
+                                <td className="py-2 pr-4 align-top">
+                                  <div className="font-medium text-slate-800">{item.label}</div>
+                                  {showNotes && item.note && (
+                                    <div className="mt-1 text-xs italic text-slate-500">{item.note}</div>
+                                  )}
+                                </td>
+                                <td className="py-2 text-right align-top font-semibold text-rose-700">
+                                  {formatCurrency(item.amount)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>

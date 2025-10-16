@@ -10,6 +10,7 @@ import LandingPage from "./LandingPage";
 import SharedReport from "./SharedReport";
 import { supabase } from "./lib/supabaseClient";
 import { ToastProvider } from "./components/ToastProvider";
+import { Analytics } from "@vercel/analytics/react";
 
 function ProtectedRoute({ children }) {
   const [session, setSession] = useState(null);
@@ -86,6 +87,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Router>
+      <Analytics />
     </ToastProvider>
   );
 }

@@ -78,6 +78,7 @@ function exportAsJson(rows) {
     mappedCategory: row.mappedCategory,
     customLabel: row.customLabel,
     amount: row.amount,
+    note: row.note || '',
   }));
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: 'application/json',
@@ -86,6 +87,44 @@ function exportAsJson(rows) {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = 'pnl-mapping.json';
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportAsCsv(rows) {
+  const header = ['Section', 'Category', 'Label', 'Amount', 'Note'];
+  const lines = [header.join(',')];
+
+  const escapeValue = (value) => {
+    if (value === null || value === undefined) {
+      return '';
+    }
+
+    const text = String(value);
+    if (/[",\n]/.test(text)) {
+      return `"${text.replace(/"/g, '""')}"`;
+    }
+
+    return text;
+  };
+
+  rows.forEach((row) => {
+    const section = row.section === 'income' ? 'Income' : row.section === 'expense' ? 'Expense' : '';
+    const category = row.mappedCategory === UNMAPPED_OPTION ? '' : row.mappedCategory || '';
+    const label = row.customLabel || row.originalLabel || '';
+    const amount = Number.isFinite(Number(row.amount)) ? Number(row.amount) : '';
+    const note = row.note || '';
+
+    lines.push(
+      [section, category, label, amount, note].map(escapeValue).join(',')
+    );
+  });
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'pnl-mapping.csv';
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -148,15 +187,10 @@ const ProgressBar = ({ progress, label, fading, showNotice }) => (
   </div>
 );
 
-const MappingRow = ({
-  row,
-  onChangeCategory,
-  onChangeLabel,
-  categoryOptions,
-}) => {
+const MappingRow = ({ row, onChangeCategory, onChangeLabel, onChangeNote, categoryOptions }) => {
   const isUnmapped = row.mappedCategory === UNMAPPED_OPTION;
   const rowClassName = [
-    'grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-4 rounded-lg border p-4 text-sm transition-colors duration-200',
+    'grid grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,0.7fr)] gap-4 rounded-lg border p-4 text-sm transition-colors duration-200',
     isUnmapped
       ? 'border-amber-400/50 bg-slate-800/70 hover:bg-slate-800'
       : 'border-slate-700 bg-slate-900 hover:bg-slate-900/80',
@@ -174,29 +208,43 @@ const MappingRow = ({
           placeholder="Rename line item"
         />
         <p className="text-xs text-gray-400">Adjust the label that will appear in your P&amp;L.</p>
+        <div className="self-center">
+          <label className="mb-1 block text-xs font-semibold text-slate-300">
+            Map To Category
+          </label>
+          <select
+            value={row.mappedCategory}
+            onChange={(event) => onChangeCategory(row.id, event.target.value)}
+            className="w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
+          >
+            <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
+            {categoryOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="flex flex-col justify-center gap-1">
+        <label className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+          Notes
+        </label>
+        <input
+          type="text"
+          value={row.note || ''}
+          onChange={(event) => onChangeNote(row.id, event.target.value)}
+          placeholder="Add note..."
+          title={row.note || ''}
+          className="note-input w-full max-w-[16rem] truncate rounded border border-slate-300 bg-slate-50 px-2 py-1 text-sm text-gray-700 placeholder:text-slate-400 transition focus:max-w-none focus:border-blue-500 focus:bg-white focus:text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-200"
+        />
+        <p className="text-xs text-slate-500">Keep track of adjustments or caveats.</p>
       </div>
       <div className="self-center text-right text-base font-semibold text-indigo-200">
         ${row.amount.toLocaleString(undefined, {
           minimumFractionDigits: 0,
           maximumFractionDigits: 0,
         })}
-      </div>
-      <div className="self-center">
-        <label className="mb-1 block text-xs font-semibold text-slate-300">
-          Map To Category
-        </label>
-        <select
-          value={row.mappedCategory}
-          onChange={(event) => onChangeCategory(row.id, event.target.value)}
-          className="w-full rounded-md border border-slate-600 bg-slate-950 px-2 py-1 text-sm text-gray-100 focus:border-blue-400 focus:outline-none"
-        >
-          <option value={UNMAPPED_OPTION}>{UNMAPPED_OPTION}</option>
-          {categoryOptions.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
       </div>
     </div>
   );
@@ -290,25 +338,34 @@ const PnLUpload = ({
     return cacheRef.current[cacheKey] || null;
   }, []);
 
-  const handleSetRows = useCallback((section, items, suggestions = {}) => {
-    const nextRows = items.map((item, index) => {
-      const rowId = buildRowId(section, index, item.label);
-      const cached = applyCachedMapping(section, item.label);
-      const suggestionKey = item.label ? item.label.toLowerCase() : '';
-      const suggestion = suggestions[suggestionKey];
-      const suggestedCategory = suggestion?.category;
-      return {
-        id: rowId,
-        section,
-        originalLabel: item.label,
-        customLabel: cached?.customLabel || item.label,
-        mappedCategory:
-          cached?.mappedCategory ||
-          (suggestedCategory ? suggestedCategory : UNMAPPED_OPTION),
-        amount: item.amount,
-        suggestionSource: suggestion?.source || null,
-      };
-    });
+  const handleSetRows = useCallback(
+    (section, items, suggestions = {}) => {
+      const previousRows = section === 'income' ? incomeRows : expenseRows;
+      const nextRows = items.map((item, index) => {
+        const rowId = buildRowId(section, index, item.label);
+        const cached = applyCachedMapping(section, item.label);
+        const suggestionKey = item.label ? item.label.toLowerCase() : '';
+        const suggestion = suggestions[suggestionKey];
+        const suggestedCategory = suggestion?.category;
+        const priorMatch = previousRows.find((row) => {
+          return (
+            row.originalLabel === item.label &&
+            Number(row.amount) === Number(item.amount)
+          );
+        });
+        return {
+          id: rowId,
+          section,
+          originalLabel: item.label,
+          customLabel: cached?.customLabel || item.label,
+          mappedCategory:
+            cached?.mappedCategory ||
+            (suggestedCategory ? suggestedCategory : UNMAPPED_OPTION),
+          amount: item.amount,
+          suggestionSource: suggestion?.source || null,
+          note: cached?.note || priorMatch?.note || '',
+        };
+      });
 
     const normaliseItems = (list) =>
       Array.isArray(list)
@@ -318,14 +375,21 @@ const PnLUpload = ({
           }))
         : [];
 
-    if (section === 'income') {
-      setIncomeRows(nextRows);
-      setSourceIncomeItems(normaliseItems(items));
-    } else {
-      setExpenseRows(nextRows);
-      setSourceExpenseItems(normaliseItems(items));
-    }
-  }, [applyCachedMapping]);
+      if (section === 'income') {
+        setIncomeRows(nextRows);
+        setSourceIncomeItems(normaliseItems(items));
+      } else {
+        setExpenseRows(nextRows);
+        setSourceExpenseItems(normaliseItems(items));
+      }
+    },
+    [applyCachedMapping, expenseRows, incomeRows]
+  );
+
+  const handleNoteChange = useCallback((id, note) => {
+    setIncomeRows((rows) => rows.map((row) => (row.id === id ? { ...row, note } : row)));
+    setExpenseRows((rows) => rows.map((row) => (row.id === id ? { ...row, note } : row)));
+  }, []);
 
   const handleUploadClick = useCallback(() => {
     if (!loading && fileInputRef.current) {
@@ -595,6 +659,7 @@ const PnLUpload = ({
       nextCache[key] = {
         mappedCategory: row.mappedCategory,
         customLabel: row.customLabel || row.originalLabel,
+        note: row.note || '',
       };
     });
     cacheRef.current = nextCache;
@@ -620,6 +685,7 @@ const PnLUpload = ({
         label,
         name: label,
         amount: safeAmount,
+        note: row.note || '',
         editable: true,
       };
     };
@@ -661,8 +727,12 @@ const PnLUpload = ({
     totals,
   ]);
 
-  const handleExport = useCallback(() => {
+  const handleExportJson = useCallback(() => {
     exportAsJson([...incomeRows, ...expenseRows]);
+  }, [expenseRows, incomeRows]);
+
+  const handleExportCsv = useCallback(() => {
+    exportAsCsv([...incomeRows, ...expenseRows]);
   }, [expenseRows, incomeRows]);
 
   return (
@@ -737,13 +807,22 @@ const PnLUpload = ({
                 <div className="font-medium">
                   {stats.totalMapped} mapped • {stats.totalUnmapped} unmapped • {stats.coverage}% coverage
                 </div>
-                <button
-                  type="button"
-                  onClick={handleExport}
-                  className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-gray-100 transition-colors hover:bg-slate-800"
-                >
-                  Export Mapping
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleExportJson}
+                    className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-gray-100 transition-colors hover:bg-slate-800"
+                  >
+                    Export JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportCsv}
+                    className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-gray-100 transition-colors hover:bg-slate-800"
+                  >
+                    Export CSV
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -788,6 +867,7 @@ const PnLUpload = ({
                       row={row}
                       onChangeCategory={handleChangeCategory}
                       onChangeLabel={handleChangeLabel}
+                      onChangeNote={handleNoteChange}
                       categoryOptions={incomeCategories}
                     />
                   ))}
@@ -834,6 +914,7 @@ const PnLUpload = ({
                       row={row}
                       onChangeCategory={handleChangeCategory}
                       onChangeLabel={handleChangeLabel}
+                      onChangeNote={handleNoteChange}
                       categoryOptions={expenseCategories}
                     />
                   ))}
