@@ -339,18 +339,49 @@ const DEFAULT_IRR_INPUTS = {
 };
 
 const DEFAULT_EXPENSES = [
-  { id: 1, name: 'Property Tax', amount: 18000 },
-  { id: 2, name: 'Insurance', amount: 12000 },
-  { id: 3, name: 'Utilities', amount: 8400 },
-  { id: 4, name: 'Maintenance & Repairs', amount: 15000 },
-  { id: 5, name: 'Advertising & Marketing', amount: 2400 },
-  { id: 6, name: 'Legal & Professional', amount: 3000 },
-  { id: 7, name: 'Administrative', amount: 5000 },
-  { id: 8, name: 'Payroll', amount: 0 },
+  { id: 1, name: 'Property Tax', amount: 18000, note: '' },
+  { id: 2, name: 'Insurance', amount: 12000, note: '' },
+  { id: 3, name: 'Utilities', amount: 8400, note: '' },
+  { id: 4, name: 'Maintenance & Repairs', amount: 15000, note: '' },
+  { id: 5, name: 'Advertising & Marketing', amount: 2400, note: '' },
+  { id: 6, name: 'Legal & Professional', amount: 3000, note: '' },
+  { id: 7, name: 'Administrative', amount: 5000, note: '' },
+  { id: 8, name: 'Payroll', amount: 0, note: '' },
 ];
 
+const normaliseNoteValue = (value) => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return '';
+};
+
+const withNormalisedNote = (item) => {
+  if (!item || typeof item !== 'object') {
+    return item;
+  }
+
+  return {
+    ...item,
+    note: normaliseNoteValue(item.note),
+  };
+};
+
+const mapWithNormalisedNotes = (items) => {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.map((item) => withNormalisedNote(item));
+};
+
 const createDefaultExpenses = () =>
-  DEFAULT_EXPENSES.map((expense) => ({ ...expense }));
+  DEFAULT_EXPENSES.map((expense) => withNormalisedNote(expense));
 
 const DEFAULT_PROFORMA_INPUTS = {
   year1NewLeases: 7,
@@ -483,11 +514,13 @@ const MobileHomeParkModel = () => {
   const [selectedUnits, setSelectedUnits] = useState([]);
   const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
   const [savingReport, setSavingReport] = useState(false);
-  const [additionalIncome, setAdditionalIncome] = useState([
-    { id: 1, name: 'Utility Income', amount: 3600 },
-    { id: 2, name: 'Rental Home Income', amount: 12000 },
-    { id: 3, name: 'Late Fees', amount: 1200 },
-  ]);
+  const [additionalIncome, setAdditionalIncome] = useState(() =>
+    mapWithNormalisedNotes([
+      { id: 1, name: 'Utility Income', amount: 3600, note: '' },
+      { id: 2, name: 'Rental Home Income', amount: 12000, note: '' },
+      { id: 3, name: 'Late Fees', amount: 1200, note: '' },
+    ])
+  );
   const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
     INCOME_CATEGORY_OPTIONS[0]
   );
@@ -499,6 +532,11 @@ const MobileHomeParkModel = () => {
   );
   const [managementPercent, setManagementPercent] = useState(5);
   const [expenseRatio, setExpenseRatio] = useState(0);
+  const [expenseOverrides, setExpenseOverrides] = useState({});
+  const [openIncomeNoteId, setOpenIncomeNoteId] = useState(null);
+  const [openExpenseNoteId, setOpenExpenseNoteId] = useState(null);
+  const [showLineItemNotes, setShowLineItemNotes] = useState(true);
+  const [showExpenseOverrides, setShowExpenseOverrides] = useState(false);
   const [pnlTotals, setPnlTotals] = useState(null);
   const [pnlMappingStats, setPnlMappingStats] = useState(null);
   const [purchaseInputs, setPurchaseInputs] = useState(() => ({ ...DEFAULT_PURCHASE_INPUTS }));
@@ -507,6 +545,8 @@ const MobileHomeParkModel = () => {
   const [projectionYears, setProjectionYears] = useState(5);
 
   const quickPopulateIdRef = useRef(2);
+  const lastIncomeNoteContextRef = useRef('summary');
+  const lastExpenseNoteContextRef = useRef('summary');
 
   const formatReportDate = useCallback((value) => {
     if (!value) {
@@ -807,6 +847,7 @@ const MobileHomeParkModel = () => {
           mappedCategory:
             rawCategory && rawCategory !== UNMAPPED_PNL_LABEL ? rawCategory : null,
           editable: line?.editable !== false,
+          note: normaliseNoteValue(line?.note),
         };
       };
 
@@ -829,8 +870,8 @@ const MobileHomeParkModel = () => {
         (item) => item.category !== 'Lot Rent'
       );
 
-      setAdditionalIncome(otherIncomeEntries);
-      setExpenses(normalisedExpenses);
+      setAdditionalIncome(mapWithNormalisedNotes(otherIncomeEntries));
+      setExpenses(mapWithNormalisedNotes(normalisedExpenses));
 
       if (lotRentEntries.length > 0 && resolvedLotRentTotal > 0) {
         setUseActualIncome(true);
@@ -1549,11 +1590,11 @@ const MobileHomeParkModel = () => {
       }
 
       if (Array.isArray(savedState?.additionalIncome)) {
-        setAdditionalIncome(savedState.additionalIncome);
+        setAdditionalIncome(mapWithNormalisedNotes(savedState.additionalIncome));
       } else {
         const incomeItems = normaliseCollection(data.additional_income);
         if (Array.isArray(incomeItems) && incomeItems.length > 0) {
-          setAdditionalIncome(incomeItems);
+          setAdditionalIncome(mapWithNormalisedNotes(incomeItems));
         }
       }
 
@@ -1568,7 +1609,7 @@ const MobileHomeParkModel = () => {
       }
 
       if (Array.isArray(nextExpenses)) {
-        setExpenses(nextExpenses);
+        setExpenses(mapWithNormalisedNotes(nextExpenses));
       } else {
         setExpenses(createDefaultExpenses());
       }
@@ -2052,6 +2093,7 @@ const MobileHomeParkModel = () => {
           id: nextId,
           name: label,
           amount: 0,
+          note: '',
         },
       ];
     });
@@ -2065,6 +2107,19 @@ const MobileHomeParkModel = () => {
     setAdditionalIncome((prev) =>
       prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
     );
+  }, []);
+
+  const handleIncomeNoteEdit = useCallback((id, note) => {
+    setAdditionalIncome((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, note: normaliseNoteValue(note) } : item
+      )
+    );
+  }, []);
+
+  const toggleIncomeNoteEditor = useCallback((id, context) => {
+    lastIncomeNoteContextRef.current = context;
+    setOpenIncomeNoteId((current) => (current === id ? null : id));
   }, []);
 
   const clearIncomeItems = useCallback(() => {
@@ -2105,6 +2160,7 @@ const MobileHomeParkModel = () => {
           id: nextId,
           name: label,
           amount: 0,
+          note: '',
         },
       ];
     });
@@ -2112,6 +2168,18 @@ const MobileHomeParkModel = () => {
 
   const removeExpenseItem = useCallback((id) => {
     setExpenses((prev) => prev.filter((expense) => expense.id !== id));
+    setExpenseOverrides((previous) => {
+      if (!previous || typeof previous !== 'object') {
+        return previous;
+      }
+      const key = String(id);
+      if (!(key in previous)) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
   }, []);
 
   const updateExpenseItem = useCallback((id, field, value) => {
@@ -2120,6 +2188,19 @@ const MobileHomeParkModel = () => {
         expense.id === id ? { ...expense, [field]: value } : expense
       )
     );
+  }, []);
+
+  const handleExpenseNoteEdit = useCallback((id, note) => {
+    setExpenses((prev) =>
+      prev.map((expense) =>
+        expense.id === id ? { ...expense, note: normaliseNoteValue(note) } : expense
+      )
+    );
+  }, []);
+
+  const toggleExpenseNoteEditor = useCallback((id, context) => {
+    lastExpenseNoteContextRef.current = context;
+    setOpenExpenseNoteId((current) => (current === id ? null : id));
   }, []);
 
   const clearExpenseItems = useCallback(() => {
@@ -2133,7 +2214,94 @@ const MobileHomeParkModel = () => {
     }
 
     setExpenses([]);
+    setExpenseOverrides({});
   }, [expenses.length]);
+
+  const handleExpenseOverrideChange = useCallback((id, yearIndex, value) => {
+    setExpenseOverrides((previous) => {
+      const next = { ...(previous || {}) };
+      const key = String(id);
+      const existing = { ...(next[key] || {}) };
+
+      if (value === null || value === '' || !Number.isFinite(value)) {
+        if (yearIndex in existing) {
+          delete existing[yearIndex];
+        }
+      } else {
+        existing[yearIndex] = value;
+      }
+
+      if (Object.keys(existing).length === 0) {
+        delete next[key];
+      } else {
+        next[key] = existing;
+      }
+
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setExpenseOverrides((previous) => {
+      if (!previous || typeof previous !== 'object') {
+        return previous;
+      }
+
+      const validIds = new Set(expenses.map((expense) => String(expense.id)));
+      let changed = false;
+      const next = {};
+
+      Object.entries(previous).forEach(([idKey, overrides]) => {
+        if (!validIds.has(idKey)) {
+          changed = true;
+          return;
+        }
+
+        const filtered = {};
+        Object.entries(overrides || {}).forEach(([yearKey, overrideValue]) => {
+          if (Number.isFinite(overrideValue)) {
+            filtered[yearKey] = overrideValue;
+          } else {
+            changed = true;
+          }
+        });
+
+        if (Object.keys(filtered).length > 0) {
+          next[idKey] = filtered;
+        } else if (overrides && Object.keys(overrides).length > 0) {
+          changed = true;
+        }
+      });
+
+      if (!changed && Object.keys(next).length === Object.keys(previous).length) {
+        return previous;
+      }
+
+      return next;
+    });
+  }, [expenses]);
+
+  useEffect(() => {
+    if (openIncomeNoteId === null) {
+      return;
+    }
+
+    const exists = additionalIncome.some((item) => item.id === openIncomeNoteId);
+    if (!exists) {
+      setOpenIncomeNoteId(null);
+    }
+  }, [additionalIncome, openIncomeNoteId]);
+
+  useEffect(() => {
+    if (openExpenseNoteId === null) {
+      return;
+    }
+
+    const exists = expenses.some((expense) => expense.id === openExpenseNoteId);
+    if (!exists) {
+      setOpenExpenseNoteId(null);
+    }
+  }, [expenses, openExpenseNoteId]);
 
   // Calculations
   const calculations = useMemo(() => {
@@ -2325,7 +2493,6 @@ const MobileHomeParkModel = () => {
       const baseRent = occupiedUnits > 0 ? lotRentIncome / occupiedUnits / 12 : 0;
       let currentRent = Number.isFinite(baseRent) ? baseRent : 0;
       let currentOtherIncome = totalAdditionalIncome;
-      let currentExpensesValue = totalOpEx;
 
       const resolveMode = (mode) =>
         mode === 'dollar' || mode === 'flat' ? 'dollar' : 'percent';
@@ -2376,6 +2543,38 @@ const MobileHomeParkModel = () => {
         };
       };
 
+      const expenseGrowthPercent = toNumber(proformaInputs.annualExpenseIncrease);
+      const expenseGrowthRate = expenseGrowthPercent / 100;
+      const expenseProjections = expenses.map((expense) => {
+        const baseAmount = Number(expense.amount);
+        const safeBase = Number.isFinite(baseAmount) ? baseAmount : 0;
+        const yearValues = [];
+        const overridesForExpense =
+          expenseOverrides?.[String(expense.id)] ?? expenseOverrides?.[expense.id] ?? {};
+
+        for (let yearIndex = 0; yearIndex < projectionCount; yearIndex += 1) {
+          const previousValue = yearIndex === 0 ? safeBase : yearValues[yearIndex - 1];
+          const defaultValue =
+            yearIndex === 0 ? safeBase : previousValue * (1 + expenseGrowthRate);
+          const rawOverride = overridesForExpense?.[yearIndex];
+          const numericOverride =
+            typeof rawOverride === 'number' ? rawOverride : Number(rawOverride);
+          const hasOverride =
+            rawOverride !== undefined &&
+            rawOverride !== null &&
+            Number.isFinite(numericOverride);
+          const finalValue = hasOverride ? numericOverride : defaultValue;
+          yearValues.push(finalValue);
+        }
+
+        return {
+          ...expense,
+          yearValues,
+        };
+      });
+
+      const managementFeeProjection = [];
+
       for (let year = 1; year <= projectionCount; year += 1) {
         let newLeases = 0;
         if (year === 1) newLeases = toNumber(proformaInputs.year1NewLeases);
@@ -2417,17 +2616,20 @@ const MobileHomeParkModel = () => {
         const yearLotRent = currentRent * currentOccupiedUnits * 12;
         const yearTotalIncome = yearLotRent + currentOtherIncome;
 
+        const yearIndex = year - 1;
+        const detailedExpensesForYear = expenseProjections.reduce(
+          (sum, expense) => sum + (Number(expense.yearValues?.[yearIndex]) || 0),
+          0
+        );
+
+        let managementFeeForYear = yearTotalIncome * (managementPercent / 100);
+        managementFeeProjection.push(managementFeeForYear);
+
         let yearExpensesValue;
         if (useExpenseRatioOverride) {
           yearExpensesValue = yearTotalIncome * (expenseRatioPercent / 100);
-          currentExpensesValue = yearExpensesValue;
         } else {
-          if (year > 1) {
-            currentExpensesValue =
-              currentExpensesValue *
-              (1 + toNumber(proformaInputs.annualExpenseIncrease) / 100);
-          }
-          yearExpensesValue = currentExpensesValue;
+          yearExpensesValue = detailedExpensesForYear + managementFeeForYear;
         }
 
         const yearNOI = yearTotalIncome - yearExpensesValue;
@@ -2454,10 +2656,11 @@ const MobileHomeParkModel = () => {
         });
       }
 
-      return years;
+      return { years, expenseProjections, managementFeeProjection };
     };
 
-    const proformaYears = calculateProforma();
+    const { years: proformaYears, expenseProjections, managementFeeProjection } =
+      calculateProforma();
     const firstYearData = proformaYears[0] || null;
     const yearSevenData =
       proformaYears.find((entry) => entry.year === 7) ||
@@ -2591,6 +2794,9 @@ const MobileHomeParkModel = () => {
       irr,
       equityMultiple,
       proformaYears,
+      expenseProjections,
+      managementFeeProjection,
+      useExpenseRatioOverride,
       annualDebtServiceSchedule,
       interestOnlyMonthlyPayment,
       postInterestOnlyMonthlyPayment: amortizingMonthlyPayment,
@@ -2611,45 +2817,77 @@ const MobileHomeParkModel = () => {
     irrInputs,
     proformaInputs,
     expenseRatio,
+    expenseOverrides,
     projectionYears,
   ]);
+
+  const { useExpenseRatioOverride, expenseRatio: calculatedExpenseRatio } = calculations ?? {};
+
+  const expenseRatioActive = useMemo(() => {
+    const directRatio = Number(expenseRatio);
+    if (Number.isFinite(directRatio) && directRatio > 0) {
+      return true;
+    }
+
+    if (typeof useExpenseRatioOverride === 'boolean') {
+      return useExpenseRatioOverride;
+    }
+
+    const ratioFromCalculations = Number(calculatedExpenseRatio);
+    if (Number.isFinite(ratioFromCalculations) && ratioFromCalculations > 0) {
+      return true;
+    }
+
+    return false;
+  }, [expenseRatio, useExpenseRatioOverride, calculatedExpenseRatio]);
 
   const averageRentInfo = useMemo(() => {
     if (!Array.isArray(units) || units.length === 0) {
       return { value: null, hasValues: false };
     }
 
-    const rentValues = [];
+    let occupiedCount = 0;
+    let totalRent = 0;
 
     units.forEach((unit) => {
-      if (!unit || typeof unit !== 'object') {
+      if (!unit || typeof unit !== 'object' || !unit.occupied) {
         return;
       }
 
-      const rentLikeKeys = Object.keys(unit).filter((key) => /rent/i.test(key));
+      occupiedCount += 1;
 
-      if (rentLikeKeys.length > 0) {
-        rentLikeKeys.forEach((key) => {
-          const numericValue = Number(unit[key]);
-          if (Number.isFinite(numericValue)) {
-            rentValues.push(numericValue);
+      let rentValue = Number(unit.rent);
+
+      if (!Number.isFinite(rentValue)) {
+        const fallbackKey = Object.keys(unit).find((key) => {
+          if (key === 'rent') {
+            return false;
           }
+
+          if (!/rent/i.test(key)) {
+            return false;
+          }
+
+          const numericCandidate = Number(unit[key]);
+          return Number.isFinite(numericCandidate);
         });
-        return;
+
+        if (fallbackKey) {
+          rentValue = Number(unit[fallbackKey]);
+        }
       }
 
-      const fallbackValue = Number(unit.rent);
-      if (Number.isFinite(fallbackValue)) {
-        rentValues.push(fallbackValue);
+      if (Number.isFinite(rentValue)) {
+        totalRent += rentValue;
       }
     });
 
-    if (rentValues.length === 0) {
-      return { value: null, hasValues: false };
+    if (occupiedCount === 0) {
+      return { value: 0, hasValues: true };
     }
 
-    const total = rentValues.reduce((sum, value) => sum + value, 0);
-    return { value: total / rentValues.length, hasValues: true };
+    const averageRent = totalRent / occupiedCount;
+    return { value: averageRent, hasValues: true };
   }, [units]);
 
   const formatCurrency = (value) => {
@@ -4316,29 +4554,73 @@ ${reportContent.innerHTML}
                             No other income items yet.
                           </div>
                         )}
-                        {additionalIncome.map((item) => (
-                          <div key={item.id} className="flex items-center justify-between">
-                            <input
-                              type="text"
-                              value={item.name}
-                              onChange={(e) => updateIncomeItem(item.id, 'name', e.target.value)}
-                              className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
-                              placeholder="Income name"
-                            />
-                            <input
-                              type="number"
-                              value={item.amount}
-                              onChange={(e) => updateIncomeItem(item.id, 'amount', Number(e.target.value))}
-                              className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
-                            />
-                            <button
-                              onClick={() => removeIncomeItem(item.id)}
-                              className="ml-3 text-red-600 hover:text-red-800 font-semibold"
+                        {additionalIncome.map((item) => {
+                          const isEditingNote = openIncomeNoteId === item.id;
+                          return (
+                            <div
+                              key={item.id}
+                              className="space-y-2 rounded border border-green-100 bg-white p-3 shadow-sm"
                             >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="flex flex-1 flex-col gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={item.name}
+                                      onChange={(e) => updateIncomeItem(item.id, 'name', e.target.value)}
+                                      className="flex-1 rounded border border-gray-300 bg-blue-50 p-2 text-blue-900 font-semibold"
+                                      placeholder="Income name"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleIncomeNoteEditor(item.id, 'editor')}
+                                      className={`text-sm transition-colors ${
+                                        item.note
+                                          ? 'text-blue-500 hover:text-blue-600'
+                                          : 'text-gray-400 hover:text-blue-500'
+                                      }`}
+                                      title={item.note ? 'Edit note' : 'Add note'}
+                                    >
+                                      📝
+                                    </button>
+                                  </div>
+                                  {isEditingNote && (
+                                    <input
+                                      type="text"
+                                      placeholder="Add note..."
+                                      className={[
+                                        'w-full rounded border border-gray-300 bg-slate-50 px-2 py-1 text-xs text-gray-700',
+                                        'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                      ].join(' ')}
+                                      value={item.note || ''}
+                                      onChange={(e) => handleIncomeNoteEdit(item.id, e.target.value)}
+                                      onBlur={() => setOpenIncomeNoteId(null)}
+                                      autoFocus={lastIncomeNoteContextRef.current === 'editor'}
+                                    />
+                                  )}
+                                  {showLineItemNotes && item.note && !isEditingNote && (
+                                    <div className="pl-1 text-xs italic text-gray-600">{item.note}</div>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    value={item.amount}
+                                    onChange={(e) => updateIncomeItem(item.id, 'amount', Number(e.target.value))}
+                                    className="w-32 rounded border border-gray-300 bg-blue-50 p-2 text-right text-blue-900 font-semibold"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeIncomeItem(item.id)}
+                                    className="text-red-600 hover:text-red-800 font-semibold"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                         <div className="flex justify-between pt-2 border-t border-gray-200">
                           <span className="text-gray-700 font-semibold">Total Other Income</span>
                           <span className="font-bold text-green-700">{formatCurrency(calculations.totalAdditionalIncome)}</span>
@@ -4388,12 +4670,12 @@ ${reportContent.innerHTML}
                       </button>
                     </div>
                   </div>
-                  <div className="space-y-3">
-                    <div className="bg-white p-4 rounded border border-red-200">
-                      <label className="font-semibold text-gray-800" htmlFor="expense-ratio">
-                        Expense Ratio (%)
-                      </label>
-                      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                    <div className="space-y-3">
+                      <div className="bg-white p-4 rounded border border-red-200">
+                        <label className="font-semibold text-gray-800" htmlFor="expense-ratio">
+                          Expense Ratio (%)
+                        </label>
+                        <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                         <input
                           id="expense-ratio"
                           type="number"
@@ -4407,42 +4689,91 @@ ${reportContent.innerHTML}
                         <span className="text-sm text-gray-500">Overrides detailed expense inputs.</span>
                       </div>
                     </div>
-                    {expenses.map((expense) => {
+                    {expenseRatioActive && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm">
+                        <p className="font-medium text-red-700">Flat Expense Ratio Applied</p>
+                        <p className="mt-1 text-red-600">
+                          Individual expense items are hidden. Totals and NOI reflect the flat expense ratio currently in use.
+                        </p>
+                      </div>
+                    )}
+                    {!expenseRatioActive && expenses.map((expense) => {
                       const perLotAmount =
                         calculations.totalUnits > 0
                           ? expense.amount / calculations.totalUnits
                           : 0;
 
+                      const isEditingNote = openExpenseNoteId === expense.id;
+
                       return (
-                        <div key={expense.id} className="space-y-1">
-                          <div className="flex items-center justify-between">
-                            <input
-                              type="text"
-                              value={expense.name}
-                              onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
-                              className="flex-1 p-2 border border-gray-300 rounded bg-blue-50 text-blue-900 font-semibold mr-3"
-                              placeholder="Expense name"
-                            />
-                            <input
-                              type="number"
-                              value={expense.amount}
-                              onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
-                              className="w-32 p-2 border border-gray-300 rounded text-right bg-blue-50 text-blue-900 font-semibold"
-                            />
-                            <button
-                              onClick={() => removeExpenseItem(expense.id)}
-                              className="ml-3 text-red-600 hover:text-red-800 font-semibold"
-                            >
-                              Remove
-                            </button>
+                        <div
+                          key={expense.id}
+                          className="space-y-2 rounded border border-red-100 bg-white p-3 shadow-sm"
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="flex flex-1 flex-col gap-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={expense.name}
+                                  onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
+                                  className="flex-1 rounded border border-gray-300 bg-blue-50 p-2 text-blue-900 font-semibold"
+                                  placeholder="Expense name"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpenseNoteEditor(expense.id, 'editor')}
+                                  className={`text-sm transition-colors ${
+                                    expense.note
+                                      ? 'text-blue-500 hover:text-blue-600'
+                                      : 'text-gray-400 hover:text-blue-500'
+                                  }`}
+                                  title={expense.note ? 'Edit note' : 'Add note'}
+                                >
+                                  📝
+                                </button>
+                              </div>
+                              {isEditingNote && (
+                                <input
+                                  type="text"
+                                  placeholder="Add note..."
+                                  className={[
+                                    'w-full rounded border border-gray-300 bg-slate-50 px-2 py-1 text-xs text-gray-700',
+                                    'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                  ].join(' ')}
+                                  value={expense.note || ''}
+                                  onChange={(e) => handleExpenseNoteEdit(expense.id, e.target.value)}
+                                  onBlur={() => setOpenExpenseNoteId(null)}
+                                  autoFocus={lastExpenseNoteContextRef.current === 'editor'}
+                                />
+                              )}
+                              {showLineItemNotes && expense.note && !isEditingNote && (
+                                <div className="pl-1 text-xs italic text-gray-600">{expense.note}</div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                value={expense.amount}
+                                onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
+                                className="w-32 rounded border border-gray-300 bg-blue-50 p-2 text-right text-blue-900 font-semibold"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeExpenseItem(expense.id)}
+                                className="text-red-600 hover:text-red-800 font-semibold"
+                              >
+                                Remove
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex justify-end text-xs text-gray-600 italic mr-20">
+                          <div className="flex justify-end text-xs italic text-gray-600">
                             {formatCurrency(perLotAmount)} per lot/year
                           </div>
                         </div>
                       );
                     })}
-                    {expenses.length === 0 && (
+                    {!expenseRatioActive && expenses.length === 0 && (
                       <div className="rounded border border-red-200 bg-red-100 px-3 py-2 text-sm text-red-900">
                         No expense line items yet.
                       </div>
@@ -5065,6 +5396,136 @@ ${reportContent.innerHTML}
                         </td>
                       ))}
                     </tr>
+                    {calculations.expenseProjections?.length > 0 && (
+                      <>
+                        <tr className="border-b border-gray-200">
+                          <td
+                            colSpan={calculations.proformaYears.length + 1}
+                            className="p-0"
+                          >
+                            <button
+                              type="button"
+                              aria-expanded={showExpenseOverrides}
+                              onClick={() => setShowExpenseOverrides((prev) => !prev)}
+                              className="flex w-full items-center justify-between bg-red-100 px-3 py-2 text-left font-semibold text-red-700"
+                            >
+                              <span>Expense Notes &amp; Overrides</span>
+                              <span>{showExpenseOverrides ? '▲' : '▼'}</span>
+                            </button>
+                          </td>
+                        </tr>
+                        {showExpenseOverrides && (
+                          <>
+                            <tr className="bg-red-100/40 border-b border-gray-200">
+                              <td className="p-3 text-xs font-semibold uppercase tracking-wide text-red-800 border-r border-gray-200">
+                                Expense Notes &amp; Overrides
+                              </td>
+                              {calculations.proformaYears.map((year) => (
+                                <td
+                                  key={`expense-heading-${year.year}`}
+                                  className="p-3 text-xs text-center font-semibold text-red-700 border-r border-gray-200"
+                                >
+                                  Year {year.year}
+                                </td>
+                              ))}
+                            </tr>
+                            {calculations.expenseProjections?.map((expense) => {
+                              const overridesForExpense =
+                                expenseOverrides?.[String(expense.id)] ?? expenseOverrides?.[expense.id] ?? {};
+                              return (
+                                <tr
+                                  key={`expense-override-${expense.id}`}
+                                  className="bg-white border-b border-gray-200"
+                                >
+                                  <td className="p-3 pl-8 text-sm font-medium text-red-900 border-r border-gray-200">
+                                    {expense.name}
+                                  </td>
+                                  {calculations.proformaYears.map((year, yearIndex) => {
+                                    const value = Number(expense.yearValues?.[yearIndex]) || 0;
+                                    const hasOverride =
+                                      overridesForExpense &&
+                                      Object.prototype.hasOwnProperty.call(overridesForExpense, yearIndex);
+                                    const baseInputClasses =
+                                      'w-full rounded border px-2 py-1 text-right text-sm transition focus:outline-none focus:ring-2';
+                                    const stateClasses = hasOverride
+                                      ? 'border-amber-400 bg-amber-50 text-amber-900 font-semibold focus:ring-amber-200'
+                                      : 'border-gray-300 bg-white text-gray-800 focus:ring-blue-200';
+                                    const disabledClasses = calculations.useExpenseRatioOverride
+                                      ? 'cursor-not-allowed opacity-60'
+                                      : 'hover:border-blue-400';
+
+                                    return (
+                                      <td
+                                        key={`expense-${expense.id}-year-${year.year}`}
+                                        className="p-2 text-right border-r border-gray-200"
+                                      >
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.01"
+                                          inputMode="decimal"
+                                          value={
+                                            Number.isFinite(value)
+                                              ? Number(value).toFixed(2)
+                                              : '0.00'
+                                          }
+                                          onChange={(event) => {
+                                            const rawValue = event.target.value;
+                                            const parsedValue =
+                                              rawValue === ''
+                                                ? null
+                                                : Number.parseFloat(rawValue);
+
+                                            handleExpenseOverrideChange(
+                                              expense.id,
+                                              yearIndex,
+                                              Number.isFinite(parsedValue) ? parsedValue : null
+                                            );
+                                          }}
+                                          disabled={calculations.useExpenseRatioOverride}
+                                          className={`${baseInputClasses} ${stateClasses} ${disabledClasses}`}
+                                          title={formatCurrency(value)}
+                                        />
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                            {calculations.useExpenseRatioOverride && (
+                              <tr className="bg-red-100/60 border-b border-gray-200">
+                                <td
+                                  colSpan={calculations.proformaYears.length + 1}
+                                  className="p-3 text-xs font-semibold text-red-700 text-center"
+                                >
+                                  Expense ratio override is active. Manual year-by-year edits are disabled until the ratio is cleared; totals currently reflect the ratio override.
+                                </td>
+                              </tr>
+                            )}
+                            {Array.isArray(calculations.managementFeeProjection) &&
+                              calculations.managementFeeProjection.length > 0 && (
+                                <tr className="bg-red-50 border-b border-gray-200">
+                                  <td className="p-3 pl-8 text-sm font-semibold text-red-800 border-r border-gray-200">
+                                    Management Fee ({managementPercent}%)
+                                  </td>
+                                  {calculations.proformaYears.map((year, yearIndex) => (
+                                    <td
+                                      key={`management-fee-${year.year}`}
+                                      className="p-3 text-right text-sm font-medium text-red-700 border-r border-gray-200"
+                                    >
+                                      {formatCurrency(
+                                        Number(
+                                          calculations.managementFeeProjection?.[yearIndex] ?? 0
+                                        )
+                                      )}
+                                    </td>
+                                  ))}
+                                </tr>
+                              )}
+                          </>
+                        )}
+                      </>
+                    )}
                     <tr className="bg-blue-100 border-b-2 border-blue-600">
                       <td className="p-4 font-bold text-gray-900 border-r border-gray-300">Net Operating Income</td>
                       {calculations.proformaYears.map((year) => (
@@ -5348,8 +5809,19 @@ ${reportContent.innerHTML}
 
                 {/* Income Statement */}
                 <div className="mb-10">
-                  <h2 className="text-2xl font-bold text-gray-900 border-b-2 border-gray-300 pb-2 mb-4">Income Statement</h2>
-                  
+                  <div className="mb-4 flex flex-col gap-3 border-b-2 border-gray-300 pb-2 sm:flex-row sm:items-center sm:justify-between">
+                    <h2 className="text-2xl font-bold text-gray-900">Income Statement</h2>
+                    <label className="flex items-center gap-2 text-sm font-medium text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={showLineItemNotes}
+                        onChange={() => setShowLineItemNotes((previous) => !previous)}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Show Notes
+                    </label>
+                  </div>
+
                   <div className="mb-6">
                     <h3 className="text-lg font-bold text-gray-800 mb-3 bg-green-50 p-2">Income</h3>
                     <div className="pl-4 space-y-2">
@@ -5367,12 +5839,52 @@ ${reportContent.innerHTML}
                         <span className="text-gray-700 font-semibold">Lot Rent Income</span>
                         <span className="font-semibold">{formatCurrency(calculations.lotRentIncome)}</span>
                       </div>
-                      {additionalIncome.map((item) => (
-                        <div key={item.id} className="flex justify-between py-1">
-                          <span className="text-gray-700">{item.name}</span>
-                          <span className="font-semibold">{formatCurrency(item.amount)}</span>
-                        </div>
-                      ))}
+                      {additionalIncome.map((item) => {
+                        const isEditingNote = openIncomeNoteId === item.id;
+                        return (
+                          <div key={item.id} className="py-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-gray-800">{item.name}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleIncomeNoteEditor(item.id, 'summary')}
+                                  className={`text-sm transition-colors ${
+                                    item.note
+                                      ? 'text-blue-500 hover:text-blue-600'
+                                      : 'text-gray-400 hover:text-blue-500'
+                                  }`}
+                                  title={item.note ? 'Edit note' : 'Add note'}
+                                >
+                                  📝
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {isEditingNote && (
+                                  <input
+                                    type="text"
+                                    placeholder="Add note..."
+                                    className={[
+                                      'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
+                                      'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                    ].join(' ')}
+                                    value={item.note || ''}
+                                    onChange={(e) => handleIncomeNoteEdit(item.id, e.target.value)}
+                                    onBlur={() => setOpenIncomeNoteId(null)}
+                                    autoFocus={lastIncomeNoteContextRef.current === 'summary'}
+                                  />
+                                )}
+                                <span className="font-semibold text-gray-800">
+                                  {formatCurrency(item.amount)}
+                                </span>
+                              </div>
+                            </div>
+                            {showLineItemNotes && item.note && (
+                              <div className="pl-6 text-xs italic text-gray-500">{item.note}</div>
+                            )}
+                          </div>
+                        );
+                      })}
                       <div className="flex justify-between py-2 border-t-2 border-green-600 font-bold text-green-700">
                         <span>Effective Gross Income</span>
                         <span>{formatCurrency(calculations.effectiveGrossIncome)}</span>
@@ -5383,12 +5895,61 @@ ${reportContent.innerHTML}
                   <div className="mb-6">
                     <h3 className="text-lg font-bold text-gray-800 mb-3 bg-red-50 p-2">Operating Expenses</h3>
                     <div className="pl-4 space-y-2">
-                      {expenses.map((expense) => (
-                        <div key={expense.id} className="flex justify-between py-1">
-                          <span className="text-gray-700">{expense.name}</span>
-                          <span className="font-semibold">{formatCurrency(expense.amount)}</span>
+                      {expenseRatioActive ? (
+                        <div className="mt-1 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+                          <p className="font-semibold text-red-700">Flat Expense Ratio Applied</p>
+                          <p className="mt-1">
+                            Individual expense items are hidden. Totals and NOI reflect the flat expense ratio currently in use.
+                          </p>
                         </div>
-                      ))}
+                      ) : (
+                        expenses.map((expense) => {
+                          const isEditingNote = openExpenseNoteId === expense.id;
+                          return (
+                            <div key={expense.id} className="py-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-gray-800">{expense.name}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleExpenseNoteEditor(expense.id, 'summary')}
+                                  className={`text-sm transition-colors ${
+                                    expense.note
+                                      ? 'text-blue-500 hover:text-blue-600'
+                                      : 'text-gray-400 hover:text-blue-500'
+                                  }`}
+                                  title={expense.note ? 'Edit note' : 'Add note'}
+                                >
+                                  📝
+                                </button>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {isEditingNote && (
+                                  <input
+                                    type="text"
+                                    placeholder="Add note..."
+                                    className={[
+                                      'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
+                                      'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                    ].join(' ')}
+                                    value={expense.note || ''}
+                                    onChange={(e) => handleExpenseNoteEdit(expense.id, e.target.value)}
+                                    onBlur={() => setOpenExpenseNoteId(null)}
+                                    autoFocus={lastExpenseNoteContextRef.current === 'summary'}
+                                  />
+                                )}
+                                <span className="font-semibold text-gray-800">
+                                  {formatCurrency(expense.amount)}
+                                </span>
+                              </div>
+                            </div>
+                            {showLineItemNotes && expense.note && (
+                              <div className="pl-6 text-xs italic text-gray-500">{expense.note}</div>
+                            )}
+                          </div>
+                        );
+                        })
+                      )}
                       <div className="flex justify-between py-1">
                         <span className="text-gray-700">Management Fee ({managementPercent}%)</span>
                         <span className="font-semibold">{formatCurrency(calculations.managementFee)}</span>

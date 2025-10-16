@@ -203,6 +203,9 @@ npm install
 npm start
 ```
 
+> **Note:** The project ships with an `.npmrc` that sets `legacy-peer-deps=true` so `@vercel/analytics` can coexist with React 19
+> while its peer dependency still targets React 18.
+
 The app will be available at [http://localhost:3000](http://localhost:3000). Authentication and report saving will function locally as long as the Supabase environment variables are set.
 
 ## Local testing with the Vercel runtime
@@ -214,6 +217,9 @@ npm install
 npm run build
 vercel dev
 ```
+
+The same legacy peer dependency flag applies when installing inside the Vercel runtime, ensuring deploys succeed without manual
+flags while `@vercel/analytics` updates its peer dependency support.
 
 `vercel dev` reads environment variables from `.env`, `.env.local`, `.env.development.local`, etc. You can sync variables from your Vercel project with:
 
