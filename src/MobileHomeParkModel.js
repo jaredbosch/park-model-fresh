@@ -339,18 +339,49 @@ const DEFAULT_IRR_INPUTS = {
 };
 
 const DEFAULT_EXPENSES = [
-  { id: 1, name: 'Property Tax', amount: 18000 },
-  { id: 2, name: 'Insurance', amount: 12000 },
-  { id: 3, name: 'Utilities', amount: 8400 },
-  { id: 4, name: 'Maintenance & Repairs', amount: 15000 },
-  { id: 5, name: 'Advertising & Marketing', amount: 2400 },
-  { id: 6, name: 'Legal & Professional', amount: 3000 },
-  { id: 7, name: 'Administrative', amount: 5000 },
-  { id: 8, name: 'Payroll', amount: 0 },
+  { id: 1, name: 'Property Tax', amount: 18000, note: '' },
+  { id: 2, name: 'Insurance', amount: 12000, note: '' },
+  { id: 3, name: 'Utilities', amount: 8400, note: '' },
+  { id: 4, name: 'Maintenance & Repairs', amount: 15000, note: '' },
+  { id: 5, name: 'Advertising & Marketing', amount: 2400, note: '' },
+  { id: 6, name: 'Legal & Professional', amount: 3000, note: '' },
+  { id: 7, name: 'Administrative', amount: 5000, note: '' },
+  { id: 8, name: 'Payroll', amount: 0, note: '' },
 ];
 
+const normaliseNoteValue = (value) => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return '';
+};
+
+const withNormalisedNote = (item) => {
+  if (!item || typeof item !== 'object') {
+    return item;
+  }
+
+  return {
+    ...item,
+    note: normaliseNoteValue(item.note),
+  };
+};
+
+const mapWithNormalisedNotes = (items) => {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.map((item) => withNormalisedNote(item));
+};
+
 const createDefaultExpenses = () =>
-  DEFAULT_EXPENSES.map((expense) => ({ ...expense }));
+  DEFAULT_EXPENSES.map((expense) => withNormalisedNote(expense));
 
 const DEFAULT_PROFORMA_INPUTS = {
   year1NewLeases: 7,
@@ -483,11 +514,13 @@ const MobileHomeParkModel = () => {
   const [selectedUnits, setSelectedUnits] = useState([]);
   const [propertyInfo, setPropertyInfo] = useState(() => ({ ...DEFAULT_PROPERTY_INFO }));
   const [savingReport, setSavingReport] = useState(false);
-  const [additionalIncome, setAdditionalIncome] = useState([
-    { id: 1, name: 'Utility Income', amount: 3600 },
-    { id: 2, name: 'Rental Home Income', amount: 12000 },
-    { id: 3, name: 'Late Fees', amount: 1200 },
-  ]);
+  const [additionalIncome, setAdditionalIncome] = useState(() =>
+    mapWithNormalisedNotes([
+      { id: 1, name: 'Utility Income', amount: 3600, note: '' },
+      { id: 2, name: 'Rental Home Income', amount: 12000, note: '' },
+      { id: 3, name: 'Late Fees', amount: 1200, note: '' },
+    ])
+  );
   const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
     INCOME_CATEGORY_OPTIONS[0]
   );
@@ -500,6 +533,8 @@ const MobileHomeParkModel = () => {
   const [managementPercent, setManagementPercent] = useState(5);
   const [expenseRatio, setExpenseRatio] = useState(0);
   const [expenseOverrides, setExpenseOverrides] = useState({});
+  const [openIncomeNoteId, setOpenIncomeNoteId] = useState(null);
+  const [openExpenseNoteId, setOpenExpenseNoteId] = useState(null);
   const [showExpenseOverrides, setShowExpenseOverrides] = useState(false);
   const [pnlTotals, setPnlTotals] = useState(null);
   const [pnlMappingStats, setPnlMappingStats] = useState(null);
@@ -809,6 +844,7 @@ const MobileHomeParkModel = () => {
           mappedCategory:
             rawCategory && rawCategory !== UNMAPPED_PNL_LABEL ? rawCategory : null,
           editable: line?.editable !== false,
+          note: normaliseNoteValue(line?.note),
         };
       };
 
@@ -831,8 +867,8 @@ const MobileHomeParkModel = () => {
         (item) => item.category !== 'Lot Rent'
       );
 
-      setAdditionalIncome(otherIncomeEntries);
-      setExpenses(normalisedExpenses);
+      setAdditionalIncome(mapWithNormalisedNotes(otherIncomeEntries));
+      setExpenses(mapWithNormalisedNotes(normalisedExpenses));
 
       if (lotRentEntries.length > 0 && resolvedLotRentTotal > 0) {
         setUseActualIncome(true);
@@ -1551,11 +1587,11 @@ const MobileHomeParkModel = () => {
       }
 
       if (Array.isArray(savedState?.additionalIncome)) {
-        setAdditionalIncome(savedState.additionalIncome);
+        setAdditionalIncome(mapWithNormalisedNotes(savedState.additionalIncome));
       } else {
         const incomeItems = normaliseCollection(data.additional_income);
         if (Array.isArray(incomeItems) && incomeItems.length > 0) {
-          setAdditionalIncome(incomeItems);
+          setAdditionalIncome(mapWithNormalisedNotes(incomeItems));
         }
       }
 
@@ -1570,7 +1606,7 @@ const MobileHomeParkModel = () => {
       }
 
       if (Array.isArray(nextExpenses)) {
-        setExpenses(nextExpenses);
+        setExpenses(mapWithNormalisedNotes(nextExpenses));
       } else {
         setExpenses(createDefaultExpenses());
       }
@@ -2054,6 +2090,7 @@ const MobileHomeParkModel = () => {
           id: nextId,
           name: label,
           amount: 0,
+          note: '',
         },
       ];
     });
@@ -2066,6 +2103,14 @@ const MobileHomeParkModel = () => {
   const updateIncomeItem = useCallback((id, field, value) => {
     setAdditionalIncome((prev) =>
       prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
+  }, []);
+
+  const handleIncomeNoteEdit = useCallback((id, note) => {
+    setAdditionalIncome((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, note: normaliseNoteValue(note) } : item
+      )
     );
   }, []);
 
@@ -2107,6 +2152,7 @@ const MobileHomeParkModel = () => {
           id: nextId,
           name: label,
           amount: 0,
+          note: '',
         },
       ];
     });
@@ -2132,6 +2178,14 @@ const MobileHomeParkModel = () => {
     setExpenses((prev) =>
       prev.map((expense) =>
         expense.id === id ? { ...expense, [field]: value } : expense
+      )
+    );
+  }, []);
+
+  const handleExpenseNoteEdit = useCallback((id, note) => {
+    setExpenses((prev) =>
+      prev.map((expense) =>
+        expense.id === id ? { ...expense, note: normaliseNoteValue(note) } : expense
       )
     );
   }, []);
@@ -2213,6 +2267,28 @@ const MobileHomeParkModel = () => {
       return next;
     });
   }, [expenses]);
+
+  useEffect(() => {
+    if (openIncomeNoteId === null) {
+      return;
+    }
+
+    const exists = additionalIncome.some((item) => item.id === openIncomeNoteId);
+    if (!exists) {
+      setOpenIncomeNoteId(null);
+    }
+  }, [additionalIncome, openIncomeNoteId]);
+
+  useEffect(() => {
+    if (openExpenseNoteId === null) {
+      return;
+    }
+
+    const exists = expenses.some((expense) => expense.id === openExpenseNoteId);
+    if (!exists) {
+      setOpenExpenseNoteId(null);
+    }
+  }, [expenses, openExpenseNoteId]);
 
   // Calculations
   const calculations = useMemo(() => {
@@ -5608,9 +5684,43 @@ ${reportContent.innerHTML}
                         <span className="font-semibold">{formatCurrency(calculations.lotRentIncome)}</span>
                       </div>
                       {additionalIncome.map((item) => (
-                        <div key={item.id} className="flex justify-between py-1">
-                          <span className="text-gray-700">{item.name}</span>
-                          <span className="font-semibold">{formatCurrency(item.amount)}</span>
+                        <div key={item.id} className="flex items-center justify-between py-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-gray-800">{item.name}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setOpenIncomeNoteId(
+                                  openIncomeNoteId === item.id ? null : item.id
+                                )
+                              }
+                              className={`text-sm transition-colors ${
+                                item.note ? 'text-blue-500 hover:text-blue-600' : 'text-gray-400 hover:text-blue-500'
+                              }`}
+                              title={item.note ? 'Edit note' : 'Add note'}
+                            >
+                              📝
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {openIncomeNoteId === item.id && (
+                              <input
+                                type="text"
+                                placeholder="Add note..."
+                                className={[
+                                  'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
+                                  'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                ].join(' ')}
+                                value={item.note || ''}
+                                onChange={(e) => handleIncomeNoteEdit(item.id, e.target.value)}
+                                onBlur={() => setOpenIncomeNoteId(null)}
+                                autoFocus
+                              />
+                            )}
+                            <span className="font-semibold text-gray-800">
+                              {formatCurrency(item.amount)}
+                            </span>
+                          </div>
                         </div>
                       ))}
                       <div className="flex justify-between py-2 border-t-2 border-green-600 font-bold text-green-700">
@@ -5624,9 +5734,45 @@ ${reportContent.innerHTML}
                     <h3 className="text-lg font-bold text-gray-800 mb-3 bg-red-50 p-2">Operating Expenses</h3>
                     <div className="pl-4 space-y-2">
                       {expenses.map((expense) => (
-                        <div key={expense.id} className="flex justify-between py-1">
-                          <span className="text-gray-700">{expense.name}</span>
-                          <span className="font-semibold">{formatCurrency(expense.amount)}</span>
+                        <div key={expense.id} className="flex items-center justify-between py-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-gray-800">{expense.name}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setOpenExpenseNoteId(
+                                  openExpenseNoteId === expense.id ? null : expense.id
+                                )
+                              }
+                              className={`text-sm transition-colors ${
+                                expense.note
+                                  ? 'text-blue-500 hover:text-blue-600'
+                                  : 'text-gray-400 hover:text-blue-500'
+                              }`}
+                              title={expense.note ? 'Edit note' : 'Add note'}
+                            >
+                              📝
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {openExpenseNoteId === expense.id && (
+                              <input
+                                type="text"
+                                placeholder="Add note..."
+                                className={[
+                                  'w-48 bg-slate-50 border border-gray-300 rounded px-2 py-1 text-xs text-gray-700',
+                                  'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200',
+                                ].join(' ')}
+                                value={expense.note || ''}
+                                onChange={(e) => handleExpenseNoteEdit(expense.id, e.target.value)}
+                                onBlur={() => setOpenExpenseNoteId(null)}
+                                autoFocus
+                              />
+                            )}
+                            <span className="font-semibold text-gray-800">
+                              {formatCurrency(expense.amount)}
+                            </span>
+                          </div>
                         </div>
                       ))}
                       <div className="flex justify-between py-1">
