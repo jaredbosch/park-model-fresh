@@ -2821,7 +2821,25 @@ const MobileHomeParkModel = () => {
     projectionYears,
   ]);
 
-  const expenseRatioActive = Boolean(calculations?.useExpenseRatioOverride);
+  const { useExpenseRatioOverride, expenseRatio: calculatedExpenseRatio } = calculations ?? {};
+
+  const expenseRatioActive = useMemo(() => {
+    const directRatio = Number(expenseRatio);
+    if (Number.isFinite(directRatio) && directRatio > 0) {
+      return true;
+    }
+
+    if (typeof useExpenseRatioOverride === 'boolean') {
+      return useExpenseRatioOverride;
+    }
+
+    const ratioFromCalculations = Number(calculatedExpenseRatio);
+    if (Number.isFinite(ratioFromCalculations) && ratioFromCalculations > 0) {
+      return true;
+    }
+
+    return false;
+  }, [expenseRatio, useExpenseRatioOverride, calculatedExpenseRatio]);
 
   const averageRentInfo = useMemo(() => {
     if (!Array.isArray(units) || units.length === 0) {
@@ -5877,12 +5895,20 @@ ${reportContent.innerHTML}
                   <div className="mb-6">
                     <h3 className="text-lg font-bold text-gray-800 mb-3 bg-red-50 p-2">Operating Expenses</h3>
                     <div className="pl-4 space-y-2">
-                      {expenses.map((expense) => {
-                        const isEditingNote = openExpenseNoteId === expense.id;
-                        return (
-                          <div key={expense.id} className="py-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
+                      {expenseRatioActive ? (
+                        <div className="mt-1 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+                          <p className="font-semibold text-red-700">Flat Expense Ratio Applied</p>
+                          <p className="mt-1">
+                            Individual expense items are hidden. Totals and NOI reflect the flat expense ratio currently in use.
+                          </p>
+                        </div>
+                      ) : (
+                        expenses.map((expense) => {
+                          const isEditingNote = openExpenseNoteId === expense.id;
+                          return (
+                            <div key={expense.id} className="py-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
                                 <span className="text-sm font-medium text-gray-800">{expense.name}</span>
                                 <button
                                   type="button"
@@ -5922,7 +5948,8 @@ ${reportContent.innerHTML}
                             )}
                           </div>
                         );
-                      })}
+                        })
+                      )}
                       <div className="flex justify-between py-1">
                         <span className="text-gray-700">Management Fee ({managementPercent}%)</span>
                         <span className="font-semibold">{formatCurrency(calculations.managementFee)}</span>
