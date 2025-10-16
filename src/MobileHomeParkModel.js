@@ -2826,37 +2826,48 @@ const MobileHomeParkModel = () => {
       return { value: null, hasValues: false };
     }
 
-    const rentValues = [];
+    let occupiedCount = 0;
+    let totalRent = 0;
 
     units.forEach((unit) => {
-      if (!unit || typeof unit !== 'object') {
+      if (!unit || typeof unit !== 'object' || !unit.occupied) {
         return;
       }
 
-      const rentLikeKeys = Object.keys(unit).filter((key) => /rent/i.test(key));
+      occupiedCount += 1;
 
-      if (rentLikeKeys.length > 0) {
-        rentLikeKeys.forEach((key) => {
-          const numericValue = Number(unit[key]);
-          if (Number.isFinite(numericValue)) {
-            rentValues.push(numericValue);
+      let rentValue = Number(unit.rent);
+
+      if (!Number.isFinite(rentValue)) {
+        const fallbackKey = Object.keys(unit).find((key) => {
+          if (key === 'rent') {
+            return false;
           }
+
+          if (!/rent/i.test(key)) {
+            return false;
+          }
+
+          const numericCandidate = Number(unit[key]);
+          return Number.isFinite(numericCandidate);
         });
-        return;
+
+        if (fallbackKey) {
+          rentValue = Number(unit[fallbackKey]);
+        }
       }
 
-      const fallbackValue = Number(unit.rent);
-      if (Number.isFinite(fallbackValue)) {
-        rentValues.push(fallbackValue);
+      if (Number.isFinite(rentValue)) {
+        totalRent += rentValue;
       }
     });
 
-    if (rentValues.length === 0) {
-      return { value: null, hasValues: false };
+    if (occupiedCount === 0) {
+      return { value: 0, hasValues: true };
     }
 
-    const total = rentValues.reduce((sum, value) => sum + value, 0);
-    return { value: total / rentValues.length, hasValues: true };
+    const averageRent = totalRent / occupiedCount;
+    return { value: averageRent, hasValues: true };
   }, [units]);
 
   const formatCurrency = (value) => {
@@ -5423,18 +5434,26 @@ ${reportContent.innerHTML}
                                         <input
                                           type="number"
                                           min="0"
-                                          step="100"
+                                          step="0.01"
                                           inputMode="decimal"
-                                          value={Number.isFinite(value) ? value : 0}
-                                          onChange={(event) =>
+                                          value={
+                                            Number.isFinite(value)
+                                              ? Number(value).toFixed(2)
+                                              : '0.00'
+                                          }
+                                          onChange={(event) => {
+                                            const rawValue = event.target.value;
+                                            const parsedValue =
+                                              rawValue === ''
+                                                ? null
+                                                : Number.parseFloat(rawValue);
+
                                             handleExpenseOverrideChange(
                                               expense.id,
                                               yearIndex,
-                                              event.target.value === ''
-                                                ? null
-                                                : Number(event.target.value)
-                                            )
-                                          }
+                                              Number.isFinite(parsedValue) ? parsedValue : null
+                                            );
+                                          }}
                                           disabled={calculations.useExpenseRatioOverride}
                                           className={`${baseInputClasses} ${stateClasses} ${disabledClasses}`}
                                           title={formatCurrency(value)}
