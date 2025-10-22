@@ -4,37 +4,94 @@ import formidable from 'formidable';
 import OpenAI from 'openai';
 import pdfParse from 'pdf-parse';
 import { createClient } from '@supabase/supabase-js';
+import { supabase as sharedSupabase } from '@/lib/supabaseClient';
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase =
+const supabaseClient =
   supabaseUrl && supabaseServiceRoleKey
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
 
-function extractStructuredLines(rawText) {
-  const lines = rawText.split('\n').map((l) => l.replace(/\s+/g, ' ').trim());
-  const result = [];
-  let currentSection = null;
+const supabase = supabaseClient || sharedSupabase || null;
 
-  for (const line of lines) {
-    if (/^INCOME/i.test(line)) currentSection = 'income';
-    if (/^EXPENSE/i.test(line)) currentSection = 'expense';
+function buildStructuredRepresentation(rawText) {
+  if (!rawText) {
+    return {
+      pdfPages: [],
+      mergedText: '',
+      normalized: '',
+      structuredLines: [],
+      docTotals: {},
+    };
+  }
 
-    const match = line.match(/^([0-9]{3,4}\s+[A-Za-z].*?)\s(-?\$?[0-9][\d,]*\.\d{2})$/);
-    if (match) {
-      result.push({
-        code: match[1].split(' ')[0],
-        label: match[1].replace(/^[0-9]{3,4}\s*/, '').trim(),
-        amount: Number(match[2].replace(/[^0-9.-]/g, '')),
+  const pdfPages = rawText.split('\f').map((text, index) => ({ index, text }));
+  const mergedText = pdfPages.map((page) => page.text).join('\n');
+
+  const normalized = mergedText
+    .replace(/\r/g, '')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+
+  const sections = normalized ? normalized.split(/(?=4\d{3}\s|5\d{3}\s)/g) : [];
+
+  const structuredLines = [];
+  let currentSection = 'income';
+  const linePattern = /^(?<code>\d{3,4})\s+(?<label>[A-Za-z0-9&,\-\s\/]+?)\s(?<amount>-?\$?[\d,]*\.?\d{0,2})$/gm;
+
+  for (const sectionChunk of sections) {
+    if (!sectionChunk.trim()) continue;
+
+    if (/INCOME/i.test(sectionChunk) && !/EXPENSE/i.test(sectionChunk)) {
+      currentSection = 'income';
+    }
+    if (/EXPENSE/i.test(sectionChunk)) {
+      currentSection = 'expense';
+    }
+
+    for (const match of sectionChunk.matchAll(linePattern)) {
+      const groups = match.groups || {};
+      const code = groups.code;
+      const label = groups.label ? groups.label.trim() : '';
+      if (!code || !label) continue;
+
+      const numericAmount = parseFloat((groups.amount || '').replace(/[^0-9.-]/g, ''));
+      const amount = Number.isFinite(numericAmount) ? numericAmount : 0;
+
+      structuredLines.push({
+        code,
+        label,
+        amount,
         section: currentSection,
       });
     }
   }
-  return result;
+
+  const docTotals = {};
+  for (const match of normalized.matchAll(/TOTAL\s+(INCOME|EXPENSES?)\s+(-?\$?[\d,]+\.\d{2})/gi)) {
+    const sectionKey = /EXPENSE/i.test(match[1]) ? 'expense' : 'income';
+    const totalValue = parseFloat(match[2].replace(/[^0-9.-]/g, ''));
+    if (Number.isFinite(totalValue)) {
+      docTotals[sectionKey] = totalValue;
+    }
+  }
+
+  return {
+    pdfPages,
+    mergedText,
+    normalized,
+    structuredLines,
+    docTotals,
+  };
 }
 
 function ensureClient() {
@@ -49,23 +106,25 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
   ensureClient();
 
   let rawText = '';
+  let structuredRepresentation = {
+    pdfPages: [],
+    mergedText: '',
+    normalized: '',
+    structuredLines: [],
+    docTotals: {},
+  };
+
   try {
     const buffer = await fsPromises.readFile(filePath);
     const parsedPdf = await pdfParse(buffer);
     rawText = parsedPdf?.text || '';
+    structuredRepresentation = buildStructuredRepresentation(rawText);
   } catch (textError) {
     console.warn('Unable to extract text from uploaded file for pre-processing:', textError);
   }
 
-  const normalizedText = rawText
-    ? rawText
-        .split('\n')
-        .map((line) => line.replace(/\s+/g, ' ').trim())
-        .filter(Boolean)
-        .join('\n')
-    : '';
+  const { normalized, structuredLines, docTotals } = structuredRepresentation;
 
-  const structuredLines = rawText ? extractStructuredLines(rawText) : [];
   if (structuredLines.length > 0) {
     console.log(`Structured pre-scan found ${structuredLines.length} line items`);
   }
@@ -84,8 +143,8 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
       'Extract structured P&L data from the provided material.',
     ];
 
-    if (normalizedText) {
-      userPromptSections.push(`Normalized P&L text:\n${normalizedText}`);
+    if (normalized) {
+      userPromptSections.push(`Normalized P&L text:\n${normalized}`);
     }
 
     if (structuredLines.length > 0) {
@@ -142,6 +201,13 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
 
     const merged = { ...parsed };
 
+    const normalizeLabelKey = (label) =>
+      (label || '')
+        .toString()
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+
     const normalizeSection = (sectionKey) => {
       const section = merged[sectionKey];
       if (!section || typeof section !== 'object') {
@@ -155,7 +221,16 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
           ...section,
           individual_items: items.reduce((acc, item) => {
             if (item && typeof item === 'object' && item.label) {
-              acc[item.label] = { label: item.label, amount: item.amount };
+              const key = normalizeLabelKey(item.label);
+              if (key) {
+                const numericAmount = Number(item.amount);
+                acc[key] = {
+                  label: item.label,
+                  amount: Number.isFinite(numericAmount)
+                    ? numericAmount
+                    : (Number.isFinite(item.amount) ? item.amount : 0),
+                };
+              }
             }
             return acc;
           }, {}),
@@ -184,6 +259,18 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
       return section;
     };
 
+    const structuredTotals = structuredLines.reduce(
+      (totals, line) => {
+        const sectionKey = sectionKeyForLine(line.section) || 'expenses';
+        if (!totals[sectionKey]) {
+          totals[sectionKey] = 0;
+        }
+        totals[sectionKey] += Number.isFinite(line.amount) ? line.amount : 0;
+        return totals;
+      },
+      { income: 0, expenses: 0 },
+    );
+
     for (const line of structuredLines) {
       const targetKey = sectionKeyForLine(line.section) || 'expenses';
       if (!merged[targetKey]) {
@@ -196,37 +283,67 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
         normalizeSection(targetKey);
       }
 
-      if (!merged[targetKey].individual_items[line.label]) {
-        const normalizedAmount = Number.isFinite(line.amount)
-          ? Math.round(line.amount)
-          : 0;
-        merged[targetKey].individual_items[line.label] = {
-          label: line.label,
+      const items = merged[targetKey].individual_items;
+      const plainKey = normalizeLabelKey(line.label);
+      const codeKey = line.code
+        ? `${line.code}-${plainKey || normalizeLabelKey(line.code)}`
+        : plainKey;
+      const existingKey = plainKey && items[plainKey] ? plainKey : null;
+
+      const normalizedAmount = Number.isFinite(line.amount)
+        ? Math.round(line.amount)
+        : 0;
+
+      if (existingKey) {
+        if (line.code && !items[existingKey].label?.startsWith(line.code)) {
+          items[existingKey].label = `${line.code} ${items[existingKey].label}`.trim();
+        }
+        if (!Number.isFinite(items[existingKey].amount)) {
+          items[existingKey].amount = normalizedAmount;
+        }
+      } else if (codeKey && !items[codeKey]) {
+        items[codeKey] = {
+          label: line.code ? `${line.code} ${line.label}` : line.label,
           amount: normalizedAmount,
         };
       }
     }
 
+    const resolveEntryForLine = (line) => {
+      const targetKey = sectionKeyForLine(line.section) || 'expenses';
+      const items = merged[targetKey]?.individual_items;
+      if (!items || Array.isArray(items)) return null;
+      const plainKey = normalizeLabelKey(line.label);
+      const codeKey = line.code
+        ? `${line.code}-${plainKey || normalizeLabelKey(line.code)}`
+        : plainKey;
+      if (plainKey && items[plainKey]) {
+        return { items, key: plainKey };
+      }
+      if (codeKey && items[codeKey]) {
+        return { items, key: codeKey };
+      }
+      return { items, key: null };
+    };
+
     const missing = structuredLines.filter((line) => {
-      const sectionKey = sectionKeyForLine(line.section) || 'expenses';
-      return !merged[sectionKey]?.individual_items?.[line.label];
+      const lookup = resolveEntryForLine(line);
+      return !lookup || !lookup.key;
     });
 
     console.warn('Missing after merge:', missing.map((m) => m.label));
 
-    if (supabase && missing.length > 0) {
-      try {
-        await supabase.from('pnl_debug_log').insert(
-          missing.map((m) => ({
-            file_name: filename,
-            section: m.section,
-            label: m.label,
-            amount: m.amount,
-          })),
-        );
-      } catch (debugError) {
-        console.error('Unable to persist missing line items to Supabase:', debugError);
-      }
+    const debugEntries = [];
+
+    if (missing.length > 0) {
+      debugEntries.push(
+        ...missing.map((m) => ({
+          file_name: filename,
+          section: m.section,
+          label: m.code ? `${m.code} ${m.label}` : m.label,
+          amount: Number.isFinite(m.amount) ? m.amount : 0,
+        })),
+      );
     }
 
     Object.keys(merged).forEach((key) => {
@@ -261,6 +378,60 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
       const totalIncome = merged.income?.total_income || 0;
       const totalExpense = merged.expenses?.total_expense || 0;
       merged.net_income = Math.round(totalIncome - totalExpense);
+    }
+
+    const mergedIncomeTotal = merged.income?.total_income || 0;
+    const mergedExpenseTotal = merged.expenses?.total_expense || 0;
+
+    const incomeMismatch = Math.abs((structuredTotals.income || 0) - mergedIncomeTotal);
+    const expenseMismatch = Math.abs((structuredTotals.expenses || 0) - mergedExpenseTotal);
+
+    if (incomeMismatch > 500) {
+      const diff = (structuredTotals.income || 0) - mergedIncomeTotal;
+      debugEntries.push({
+        file_name: filename,
+        section: 'income',
+        label: 'Total mismatch',
+        amount: Number(diff.toFixed(2)),
+      });
+    }
+
+    if (expenseMismatch > 500) {
+      const diff = (structuredTotals.expenses || 0) - mergedExpenseTotal;
+      debugEntries.push({
+        file_name: filename,
+        section: 'expense',
+        label: 'Total mismatch',
+        amount: Number(diff.toFixed(2)),
+      });
+    }
+
+    const netCheck = (structuredTotals.income || 0) - (structuredTotals.expenses || 0);
+    const netFromDocTotals =
+      docTotals.income != null && docTotals.expense != null
+        ? docTotals.income - docTotals.expense
+        : null;
+
+    if (
+      netFromDocTotals != null &&
+      Math.abs(netFromDocTotals - netCheck) > 500
+    ) {
+      const diff = Number((netFromDocTotals - netCheck).toFixed(2));
+      console.warn(`⚠️ P&L discrepancy: ${diff}`);
+      debugEntries.push({
+        file_name: filename,
+        section: 'debug',
+        label: 'Net Mismatch',
+        amount: diff,
+      });
+    }
+
+    if (supabase && debugEntries.length > 0) {
+      try {
+        await supabase.from('pnl_debug_log').insert(debugEntries);
+      } catch (debugError) {
+        console.error('Unable to persist missing line items to Supabase:', debugError);
+      }
     }
 
     return merged;
