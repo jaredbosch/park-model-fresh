@@ -375,6 +375,7 @@ const withNormalisedNote = (item) => {
   return {
     ...item,
     note: normaliseNoteValue(item.note),
+    removed: Boolean(item.removed),
   };
 };
 
@@ -522,9 +523,9 @@ const MobileHomeParkModel = () => {
   const [savingReport, setSavingReport] = useState(false);
   const [additionalIncome, setAdditionalIncome] = useState(() =>
     mapWithNormalisedNotes([
-      { id: 1, name: 'Utility Income', amount: 3600, note: '' },
-      { id: 2, name: 'Rental Home Income', amount: 12000, note: '' },
-      { id: 3, name: 'Late Fees', amount: 1200, note: '' },
+      { id: 1, name: 'Utility Income', amount: 3600, note: '', removed: false },
+      { id: 2, name: 'Rental Home Income', amount: 12000, note: '', removed: false },
+      { id: 3, name: 'Late Fees', amount: 1200, note: '', removed: false },
     ])
   );
   const [selectedIncomeCategory, setSelectedIncomeCategory] = useState(
@@ -2100,13 +2101,19 @@ const MobileHomeParkModel = () => {
           name: label,
           amount: 0,
           note: '',
+          removed: false,
         },
       ];
     });
   }, [selectedIncomeCategory]);
 
   const removeIncomeItem = useCallback((id) => {
-    setAdditionalIncome((prev) => prev.filter((item) => item.id !== id));
+    setAdditionalIncome((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, removed: !item.removed } : item
+      )
+    );
+    setOpenIncomeNoteId((current) => (current === id ? null : current));
   }, []);
 
   const updateIncomeItem = useCallback((id, field, value) => {
@@ -2167,25 +2174,19 @@ const MobileHomeParkModel = () => {
           name: label,
           amount: 0,
           note: '',
+          removed: false,
         },
       ];
     });
   }, [selectedExpenseCategory]);
 
   const removeExpenseItem = useCallback((id) => {
-    setExpenses((prev) => prev.filter((expense) => expense.id !== id));
-    setExpenseOverrides((previous) => {
-      if (!previous || typeof previous !== 'object') {
-        return previous;
-      }
-      const key = String(id);
-      if (!(key in previous)) {
-        return previous;
-      }
-      const next = { ...previous };
-      delete next[key];
-      return next;
-    });
+    setExpenses((prev) =>
+      prev.map((expense) =>
+        expense.id === id ? { ...expense, removed: !expense.removed } : expense
+      )
+    );
+    setOpenExpenseNoteId((current) => (current === id ? null : current));
   }, []);
 
   const updateExpenseItem = useCallback((id, field, value) => {
@@ -2323,7 +2324,8 @@ const MobileHomeParkModel = () => {
     const lotRentIncome = useActualIncome ? Number(actualIncome) : rentRollIncome;
 
     // Additional Income
-    const totalAdditionalIncome = additionalIncome.reduce(
+    const activeAdditionalIncome = additionalIncome.filter((item) => !item.removed);
+    const totalAdditionalIncome = activeAdditionalIncome.reduce(
       (sum, item) => sum + Number(item.amount),
       0
     );
@@ -2334,9 +2336,10 @@ const MobileHomeParkModel = () => {
     const economicOccupancy = grossPotentialRent > 0 ? (lotRentIncome / grossPotentialRent) * 100 : 0;
 
     // Operating Expenses
+    const activeExpenses = expenses.filter((exp) => !exp.removed);
     const managementFee = effectiveGrossIncome * (managementPercent / 100);
     const detailedExpenses =
-      expenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
+      activeExpenses.reduce((sum, exp) => sum + Number(exp.amount), 0) + managementFee;
     const ratioValue = Number(expenseRatio);
     const expenseRatioPercent = Number.isFinite(ratioValue) ? Math.max(ratioValue, 0) : 0;
     const useExpenseRatioOverride = expenseRatioPercent > 0;
@@ -2551,7 +2554,7 @@ const MobileHomeParkModel = () => {
 
       const expenseGrowthPercent = toNumber(proformaInputs.annualExpenseIncrease);
       const expenseGrowthRate = expenseGrowthPercent / 100;
-      const expenseProjections = expenses.map((expense) => {
+      const expenseProjections = activeExpenses.map((expense) => {
         const baseAmount = Number(expense.amount);
         const safeBase = Number.isFinite(baseAmount) ? baseAmount : 0;
         const yearValues = [];
@@ -4562,10 +4565,32 @@ ${reportContent.innerHTML}
                         )}
                         {additionalIncome.map((item) => {
                           const isEditingNote = openIncomeNoteId === item.id;
+                          const rowClass = item.removed ? 'opacity-50 bg-gray-100' : '';
+                          const nameInputClasses = [
+                            'flex-1 rounded border border-gray-300 p-2 font-semibold',
+                            item.removed ? 'bg-gray-100 text-gray-500' : 'bg-blue-50 text-blue-900',
+                          ].join(' ');
+                          const amountInputClasses = [
+                            'w-32 rounded border border-gray-300 p-2 text-right font-semibold',
+                            item.removed ? 'bg-gray-100 text-gray-500' : 'bg-blue-50 text-blue-900',
+                          ].join(' ');
+                          const noteButtonBase = item.note
+                            ? 'text-blue-500 hover:text-blue-600'
+                            : 'text-gray-400 hover:text-blue-500';
+                          const noteButtonClasses = [
+                            'text-sm transition-colors',
+                            noteButtonBase,
+                            item.removed ? 'cursor-not-allowed text-gray-400 hover:text-gray-400' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
                           return (
                             <div
                               key={item.id}
-                              className="space-y-2 rounded border border-green-100 bg-white p-3 shadow-sm"
+                              className={[
+                                'space-y-2 rounded border border-green-100 bg-white p-3 shadow-sm',
+                                rowClass,
+                              ].join(' ')}
                             >
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                 <div className="flex flex-1 flex-col gap-2">
@@ -4574,23 +4599,21 @@ ${reportContent.innerHTML}
                                       type="text"
                                       value={item.name}
                                       onChange={(e) => updateIncomeItem(item.id, 'name', e.target.value)}
-                                      className="flex-1 rounded border border-gray-300 bg-blue-50 p-2 text-blue-900 font-semibold"
+                                      className={nameInputClasses}
                                       placeholder="Income name"
+                                      disabled={item.removed}
                                     />
                                     <button
                                       type="button"
                                       onClick={() => toggleIncomeNoteEditor(item.id, 'editor')}
-                                      className={`text-sm transition-colors ${
-                                        item.note
-                                          ? 'text-blue-500 hover:text-blue-600'
-                                          : 'text-gray-400 hover:text-blue-500'
-                                      }`}
+                                      className={noteButtonClasses}
                                       title={item.note ? 'Edit note' : 'Add note'}
+                                      disabled={item.removed}
                                     >
                                       📝
                                     </button>
                                   </div>
-                                  {isEditingNote && (
+                                  {isEditingNote && !item.removed && (
                                     <input
                                       type="text"
                                       placeholder="Add note..."
@@ -4604,7 +4627,7 @@ ${reportContent.innerHTML}
                                       autoFocus={lastIncomeNoteContextRef.current === 'editor'}
                                     />
                                   )}
-                                  {showLineItemNotes && item.note && !isEditingNote && (
+                                  {showLineItemNotes && item.note && !isEditingNote && !item.removed && (
                                     <div className="pl-1 text-xs italic text-gray-600">{item.note}</div>
                                   )}
                                 </div>
@@ -4613,17 +4636,21 @@ ${reportContent.innerHTML}
                                     type="number"
                                     value={item.amount}
                                     onChange={(e) => updateIncomeItem(item.id, 'amount', Number(e.target.value))}
-                                    className="w-32 rounded border border-gray-300 bg-blue-50 p-2 text-right text-blue-900 font-semibold"
+                                    className={amountInputClasses}
+                                    disabled={item.removed}
                                   />
                                   <button
                                     type="button"
                                     onClick={() => removeIncomeItem(item.id)}
                                     className="text-red-600 hover:text-red-800 font-semibold"
                                   >
-                                    Remove
+                                    {item.removed ? 'Undo Remove' : 'Remove'}
                                   </button>
                                 </div>
                               </div>
+                              {item.removed && (
+                                <div className="text-xs text-gray-500 italic">Removed from totals</div>
+                              )}
                             </div>
                           );
                         })}
@@ -4710,11 +4737,33 @@ ${reportContent.innerHTML}
                           : 0;
 
                       const isEditingNote = openExpenseNoteId === expense.id;
+                      const rowClass = expense.removed ? 'opacity-50 bg-gray-100' : '';
+                      const nameInputClasses = [
+                        'flex-1 rounded border border-gray-300 p-2 font-semibold',
+                        expense.removed ? 'bg-gray-100 text-gray-500' : 'bg-blue-50 text-blue-900',
+                      ].join(' ');
+                      const amountInputClasses = [
+                        'w-32 rounded border border-gray-300 p-2 text-right font-semibold',
+                        expense.removed ? 'bg-gray-100 text-gray-500' : 'bg-blue-50 text-blue-900',
+                      ].join(' ');
+                      const noteButtonBase = expense.note
+                        ? 'text-blue-500 hover:text-blue-600'
+                        : 'text-gray-400 hover:text-blue-500';
+                      const noteButtonClasses = [
+                        'text-sm transition-colors',
+                        noteButtonBase,
+                        expense.removed ? 'cursor-not-allowed text-gray-400 hover:text-gray-400' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ');
 
                       return (
                         <div
                           key={expense.id}
-                          className="space-y-2 rounded border border-red-100 bg-white p-3 shadow-sm"
+                          className={[
+                            'space-y-2 rounded border border-red-100 bg-white p-3 shadow-sm',
+                            rowClass,
+                          ].join(' ')}
                         >
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div className="flex flex-1 flex-col gap-2">
@@ -4723,23 +4772,21 @@ ${reportContent.innerHTML}
                                   type="text"
                                   value={expense.name}
                                   onChange={(e) => updateExpenseItem(expense.id, 'name', e.target.value)}
-                                  className="flex-1 rounded border border-gray-300 bg-blue-50 p-2 text-blue-900 font-semibold"
+                                  className={nameInputClasses}
                                   placeholder="Expense name"
+                                  disabled={expense.removed}
                                 />
                                 <button
                                   type="button"
                                   onClick={() => toggleExpenseNoteEditor(expense.id, 'editor')}
-                                  className={`text-sm transition-colors ${
-                                    expense.note
-                                      ? 'text-blue-500 hover:text-blue-600'
-                                      : 'text-gray-400 hover:text-blue-500'
-                                  }`}
+                                  className={noteButtonClasses}
                                   title={expense.note ? 'Edit note' : 'Add note'}
+                                  disabled={expense.removed}
                                 >
                                   📝
                                 </button>
                               </div>
-                              {isEditingNote && (
+                              {isEditingNote && !expense.removed && (
                                 <input
                                   type="text"
                                   placeholder="Add note..."
@@ -4753,7 +4800,7 @@ ${reportContent.innerHTML}
                                   autoFocus={lastExpenseNoteContextRef.current === 'editor'}
                                 />
                               )}
-                              {showLineItemNotes && expense.note && !isEditingNote && (
+                              {showLineItemNotes && expense.note && !isEditingNote && !expense.removed && (
                                 <div className="pl-1 text-xs italic text-gray-600">{expense.note}</div>
                               )}
                             </div>
@@ -4762,20 +4809,25 @@ ${reportContent.innerHTML}
                                 type="number"
                                 value={expense.amount}
                                 onChange={(e) => updateExpenseItem(expense.id, 'amount', Number(e.target.value))}
-                                className="w-32 rounded border border-gray-300 bg-blue-50 p-2 text-right text-blue-900 font-semibold"
+                                className={amountInputClasses}
+                                disabled={expense.removed}
                               />
                               <button
                                 type="button"
                                 onClick={() => removeExpenseItem(expense.id)}
                                 className="text-red-600 hover:text-red-800 font-semibold"
                               >
-                                Remove
+                                {expense.removed ? 'Undo Remove' : 'Remove'}
                               </button>
                             </div>
                           </div>
-                          <div className="flex justify-end text-xs italic text-gray-600">
-                            {formatCurrency(perLotAmount)} per lot/year
-                          </div>
+                          {expense.removed ? (
+                            <div className="text-xs text-gray-500 italic">Removed from totals</div>
+                          ) : (
+                            <div className="flex justify-end text-xs italic text-gray-600">
+                              {formatCurrency(perLotAmount)} per lot/year
+                            </div>
+                          )}
                         </div>
                       );
                     })}
