@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
+import path from 'path';
 import formidable from 'formidable';
 import OpenAI from 'openai';
 import pdfParse from 'pdf-parse';
@@ -17,6 +18,30 @@ const supabaseClient =
     : null;
 
 const supabase = supabaseClient || sharedSupabase || null;
+
+let nextResponseJson;
+
+async function ensureJsonResponder() {
+  if (nextResponseJson) {
+    return nextResponseJson;
+  }
+
+  try {
+    const mod = await import('next/server');
+    nextResponseJson = (body, init) => mod.NextResponse.json(body, init);
+  } catch (error) {
+    nextResponseJson = (body, init = {}) => {
+      const status = init?.status ?? 200;
+      const headers = {
+        'content-type': 'application/json',
+        ...(init?.headers || {}),
+      };
+      return new Response(JSON.stringify(body), { ...init, status, headers });
+    };
+  }
+
+  return nextResponseJson;
+}
 
 function buildStructuredRepresentation(rawText) {
   if (!rawText) {
@@ -102,12 +127,6 @@ function ensureClient() {
   }
 }
 
-function sendJson(res, statusCode, payload) {
-  res.status(statusCode);
-  res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify(payload));
-}
-
 async function extractStructuredPnlWithGpt(filePath, filename) {
   ensureClient();
 
@@ -182,7 +201,9 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
       response_format: { type: 'json_object' },
     });
 
-    console.log('Raw GPT response:', response.choices?.[0]?.message?.content);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 Raw GPT output:', response.choices?.[0]?.message?.content);
+    }
 
     let content = response.choices?.[0]?.message?.content;
     if (Array.isArray(content)) {
@@ -464,15 +485,114 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
   }
 }
 
+async function parseAndPersist(tempFilePath, originalFilename) {
+  const parsed = await extractStructuredPnlWithGpt(tempFilePath, originalFilename);
+
+  if (!parsed || typeof parsed !== 'object') {
+    const error = new Error('Unable to parse structured P&L data.');
+    error.statusCode = 422;
+    throw error;
+  }
+
+  if (supabase) {
+    try {
+      await supabase.from('parsed_pnls').insert({
+        filename: originalFilename,
+        parsed_json: parsed,
+        parsed_at: new Date().toISOString(),
+        model_used: 'gpt-4o',
+      });
+    } catch (storageError) {
+      console.error('Unable to persist parsed P&L payload:', storageError);
+    }
+  }
+
+  return {
+    success: true,
+    data: parsed,
+    metadata: {
+      source_filename: originalFilename,
+      extraction_strategy: 'gpt-4o-structured',
+      model_used: 'gpt-4o',
+    },
+  };
+}
+
+export async function POST(req) {
+  let tempFilePath;
+  let originalFilename = 'upload.pdf';
+
+  try {
+    const respondJson = await ensureJsonResponder();
+
+    const formData = await req.formData();
+    const file = formData.get('file');
+
+    if (!file || typeof file === 'string') {
+      throw Object.assign(new Error('No file uploaded'), { statusCode: 400 });
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    await fsPromises.mkdir('/tmp', { recursive: true });
+
+    originalFilename = typeof file.name === 'string' && file.name ? file.name : 'upload.pdf';
+    const safeName = originalFilename.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    tempFilePath = path.join(
+      '/tmp',
+      `${Date.now()}-${Math.random().toString(36).slice(2)}-${safeName || 'upload.pdf'}`,
+    );
+
+    await fsPromises.writeFile(tempFilePath, buffer);
+
+    const payload = await parseAndPersist(tempFilePath, originalFilename);
+
+    return respondJson(payload);
+  } catch (error) {
+    console.error('❌ P&L parse server error:', error);
+    const respondJson = await ensureJsonResponder();
+    const statusCode = error?.statusCode || 500;
+    return respondJson(
+      {
+        error: error?.message || 'Unexpected server error',
+      },
+      { status: statusCode },
+    );
+  } finally {
+    if (tempFilePath) {
+      await fsPromises.unlink(tempFilePath).catch(() => {});
+    }
+  }
+}
+
+function sendNodeJson(res, statusCode, payload) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(payload));
+}
+
 export default async function handler(req, res) {
+  if (!res || typeof req?.formData === 'function' || req instanceof Request) {
+    const response = await POST(req);
+    if (res && typeof res.setHeader === 'function') {
+      res.statusCode = response.status || 200;
+      response.headers?.forEach?.((value, key) => {
+        res.setHeader(key, value);
+      });
+      const text = await response.text();
+      res.end(text);
+    }
+    return response;
+  }
+
   if (req.method !== 'POST') {
-    res.setHeader('Allow', ['POST']);
-    sendJson(res, 405, { success: false, error: 'Method not allowed' });
+    sendNodeJson(res, 405, { error: 'Method not allowed' });
     return;
   }
 
   let tempFilePath;
-  let originalFilename;
+  let originalFilename = 'upload.pdf';
 
   try {
     await fsPromises.mkdir('/tmp', { recursive: true });
@@ -498,54 +618,25 @@ export default async function handler(req, res) {
     const fileDescriptor = Array.isArray(incomingFile) ? incomingFile[0] : incomingFile;
 
     if (!fileDescriptor) {
-      sendJson(res, 400, { success: false, error: 'No file uploaded.' });
+      sendNodeJson(res, 400, { error: 'No file uploaded' });
       return;
     }
 
     tempFilePath = fileDescriptor.filepath || fileDescriptor.path;
-    originalFilename = fileDescriptor.originalFilename || fileDescriptor.newFilename || 'upload.pdf';
+    originalFilename =
+      fileDescriptor.originalFilename || fileDescriptor.newFilename || originalFilename;
 
     if (!tempFilePath) {
-      sendJson(res, 400, { success: false, error: 'Uploaded file is missing a temporary path.' });
+      sendNodeJson(res, 400, { error: 'Uploaded file is missing a temporary path.' });
       return;
     }
 
-    const parsed = await extractStructuredPnlWithGpt(tempFilePath, originalFilename);
-
-    if (!parsed || typeof parsed !== 'object') {
-      sendJson(res, 422, { success: false, error: 'Unable to parse structured P&L data.' });
-      return;
-    }
-
-    if (supabase) {
-      try {
-        await supabase.from('parsed_pnls').insert({
-          filename: originalFilename,
-          parsed_json: parsed,
-          parsed_at: new Date().toISOString(),
-          model_used: 'gpt-4o',
-        });
-      } catch (storageError) {
-        console.error('Unable to persist parsed P&L payload:', storageError);
-      }
-    }
-
-    sendJson(res, 200, {
-      success: true,
-      data: parsed,
-      metadata: {
-        source_filename: originalFilename,
-        extraction_strategy: 'gpt-4o-structured',
-        model_used: 'gpt-4o',
-      },
-    });
+    const payload = await parseAndPersist(tempFilePath, originalFilename);
+    sendNodeJson(res, 200, payload);
   } catch (error) {
-    console.error('Error parsing P&L:', error);
+    console.error('❌ P&L parse server error:', error);
     const statusCode = error?.statusCode || 500;
-    sendJson(res, statusCode, {
-      success: false,
-      error: error.message || 'Unexpected error while parsing P&L.',
-    });
+    sendNodeJson(res, statusCode, { error: error?.message || 'Unexpected server error' });
   } finally {
     if (tempFilePath) {
       await fsPromises.unlink(tempFilePath).catch(() => {});

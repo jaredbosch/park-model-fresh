@@ -424,12 +424,16 @@ const PnLUpload = ({
 
         updateProgress(60, 'Processing results…');
 
+        const rawText = await response.text();
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('Raw P&L API response:', rawText);
+        }
+
         let payload;
         try {
-          payload = await response.json();
+          payload = JSON.parse(rawText);
         } catch (parseError) {
-          console.error('Raw P&L API response was not valid JSON.');
-          throw new Error('Server did not return valid JSON');
+          throw new Error(`Server did not return valid JSON:\n${rawText}`);
         }
 
         if (!response.ok) {
