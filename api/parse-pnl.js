@@ -102,6 +102,12 @@ function ensureClient() {
   }
 }
 
+function sendJson(res, statusCode, payload) {
+  res.status(statusCode);
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(payload));
+}
+
 async function extractStructuredPnlWithGpt(filePath, filename) {
   ensureClient();
 
@@ -188,7 +194,15 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
       throw new Error('No structured content returned from OpenAI.');
     }
 
-    const parsed = JSON.parse(content);
+    const sanitizedContent = content.replace(/```json|```/gi, '').trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(sanitizedContent);
+    } catch (parseError) {
+      console.error('GPT response was not valid JSON:', sanitizedContent);
+      throw new Error('Parser returned invalid JSON.');
+    }
     if (
       !parsed ||
       typeof parsed !== 'object' ||
@@ -453,7 +467,7 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
-    res.status(405).json({ success: false, error: 'Method not allowed' });
+    sendJson(res, 405, { success: false, error: 'Method not allowed' });
     return;
   }
 
@@ -484,7 +498,7 @@ export default async function handler(req, res) {
     const fileDescriptor = Array.isArray(incomingFile) ? incomingFile[0] : incomingFile;
 
     if (!fileDescriptor) {
-      res.status(400).json({ success: false, error: 'No file uploaded.' });
+      sendJson(res, 400, { success: false, error: 'No file uploaded.' });
       return;
     }
 
@@ -492,14 +506,14 @@ export default async function handler(req, res) {
     originalFilename = fileDescriptor.originalFilename || fileDescriptor.newFilename || 'upload.pdf';
 
     if (!tempFilePath) {
-      res.status(400).json({ success: false, error: 'Uploaded file is missing a temporary path.' });
+      sendJson(res, 400, { success: false, error: 'Uploaded file is missing a temporary path.' });
       return;
     }
 
     const parsed = await extractStructuredPnlWithGpt(tempFilePath, originalFilename);
 
     if (!parsed || typeof parsed !== 'object') {
-      res.status(422).json({ success: false, error: 'Unable to parse structured P&L data.' });
+      sendJson(res, 422, { success: false, error: 'Unable to parse structured P&L data.' });
       return;
     }
 
@@ -516,7 +530,7 @@ export default async function handler(req, res) {
       }
     }
 
-    res.status(200).json({
+    sendJson(res, 200, {
       success: true,
       data: parsed,
       metadata: {
@@ -528,9 +542,10 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('Error parsing P&L:', error);
     const statusCode = error?.statusCode || 500;
-    res
-      .status(statusCode)
-      .json({ success: false, error: error.message || 'Unexpected error while parsing P&L.' });
+    sendJson(res, statusCode, {
+      success: false,
+      error: error.message || 'Unexpected error while parsing P&L.',
+    });
   } finally {
     if (tempFilePath) {
       await fsPromises.unlink(tempFilePath).catch(() => {});
