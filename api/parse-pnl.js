@@ -5,7 +5,7 @@ import formidable from 'formidable';
 import OpenAI from 'openai';
 import pdfParse from 'pdf-parse';
 import { createClient } from '@supabase/supabase-js';
-import { supabase as sharedSupabase } from '@/lib/supabaseClient';
+import { supabase as sharedSupabase } from '../src/lib/supabaseClient.js';
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
