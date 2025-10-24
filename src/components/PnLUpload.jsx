@@ -424,9 +424,25 @@ const PnLUpload = ({
 
         updateProgress(60, 'Processing results…');
 
-        const payload = await response.json();
-        if (!response.ok || !payload?.success) {
-          const error = payload?.error || 'Could not read line items. Please check file clarity or format.';
+        const rawText = await response.text();
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('Raw P&L API response:', rawText);
+        }
+
+        let payload;
+        try {
+          payload = JSON.parse(rawText);
+        } catch (parseError) {
+          throw new Error(`Server did not return valid JSON:\n${rawText}`);
+        }
+
+        if (!response.ok) {
+          throw new Error(payload?.error || 'Upload failed');
+        }
+
+        if (!payload?.success) {
+          const error =
+            payload?.error || 'Could not read line items. Please check file clarity or format.';
           throw new Error(error);
         }
 

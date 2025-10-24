@@ -1,18 +1,123 @@
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
+import path from 'path';
 import formidable from 'formidable';
 import OpenAI from 'openai';
+import pdfParse from 'pdf-parse';
 import { createClient } from '@supabase/supabase-js';
+import { supabase as sharedSupabase } from '../src/lib/supabaseClient.js';
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase =
+const supabaseClient =
   supabaseUrl && supabaseServiceRoleKey
     ? createClient(supabaseUrl, supabaseServiceRoleKey)
     : null;
+
+const supabase = supabaseClient || sharedSupabase || null;
+
+let nextResponseJson;
+
+async function ensureJsonResponder() {
+  if (nextResponseJson) {
+    return nextResponseJson;
+  }
+
+  try {
+    const mod = await import('next/server');
+    nextResponseJson = (body, init) => mod.NextResponse.json(body, init);
+  } catch (error) {
+    nextResponseJson = (body, init = {}) => {
+      const status = init?.status ?? 200;
+      const headers = {
+        'content-type': 'application/json',
+        ...(init?.headers || {}),
+      };
+      return new Response(JSON.stringify(body), { ...init, status, headers });
+    };
+  }
+
+  return nextResponseJson;
+}
+
+function buildStructuredRepresentation(rawText) {
+  if (!rawText) {
+    return {
+      pdfPages: [],
+      mergedText: '',
+      normalized: '',
+      structuredLines: [],
+      docTotals: {},
+    };
+  }
+
+  const pdfPages = rawText.split('\f').map((text, index) => ({ index, text }));
+  const mergedText = pdfPages.map((page) => page.text).join('\n');
+
+  const normalized = mergedText
+    .replace(/\r/g, '')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+
+  const sections = normalized ? normalized.split(/(?=4\d{3}\s|5\d{3}\s)/g) : [];
+
+  const structuredLines = [];
+  let currentSection = 'income';
+  const linePattern = /^(?<code>\d{3,4})\s+(?<label>[A-Za-z0-9&,\-\s\/]+?)\s(?<amount>-?\$?[\d,]*\.?\d{0,2})$/gm;
+
+  for (const sectionChunk of sections) {
+    if (!sectionChunk.trim()) continue;
+
+    if (/INCOME/i.test(sectionChunk) && !/EXPENSE/i.test(sectionChunk)) {
+      currentSection = 'income';
+    }
+    if (/EXPENSE/i.test(sectionChunk)) {
+      currentSection = 'expense';
+    }
+
+    for (const match of sectionChunk.matchAll(linePattern)) {
+      const groups = match.groups || {};
+      const code = groups.code;
+      const label = groups.label ? groups.label.trim() : '';
+      if (!code || !label) continue;
+
+      const numericAmount = parseFloat((groups.amount || '').replace(/[^0-9.-]/g, ''));
+      const amount = Number.isFinite(numericAmount) ? numericAmount : 0;
+
+      structuredLines.push({
+        code,
+        label,
+        amount,
+        section: currentSection,
+      });
+    }
+  }
+
+  const docTotals = {};
+  for (const match of normalized.matchAll(/TOTAL\s+(INCOME|EXPENSES?)\s+(-?\$?[\d,]+\.\d{2})/gi)) {
+    const sectionKey = /EXPENSE/i.test(match[1]) ? 'expense' : 'income';
+    const totalValue = parseFloat(match[2].replace(/[^0-9.-]/g, ''));
+    if (Number.isFinite(totalValue)) {
+      docTotals[sectionKey] = totalValue;
+    }
+  }
+
+  return {
+    pdfPages,
+    mergedText,
+    normalized,
+    structuredLines,
+    docTotals,
+  };
+}
 
 function ensureClient() {
   if (!openaiClient) {
@@ -24,6 +129,31 @@ function ensureClient() {
 
 async function extractStructuredPnlWithGpt(filePath, filename) {
   ensureClient();
+
+  let rawText = '';
+  let structuredRepresentation = {
+    pdfPages: [],
+    mergedText: '',
+    normalized: '',
+    structuredLines: [],
+    docTotals: {},
+  };
+
+  try {
+    const buffer = await fsPromises.readFile(filePath);
+    const parsedPdf = await pdfParse(buffer);
+    rawText = parsedPdf?.text || '';
+    structuredRepresentation = buildStructuredRepresentation(rawText);
+  } catch (textError) {
+    console.warn('Unable to extract text from uploaded file for pre-processing:', textError);
+  }
+
+  const { normalized, structuredLines, docTotals } = structuredRepresentation;
+
+  if (structuredLines.length > 0) {
+    console.log(`Structured pre-scan found ${structuredLines.length} line items`);
+  }
+
   const stream = fs.createReadStream(filePath);
   let fileUpload;
   try {
@@ -34,6 +164,24 @@ async function extractStructuredPnlWithGpt(filePath, filename) {
     });
 
     // Ask GPT-4o to extract structured data
+    const userPromptSections = [
+      'Extract structured P&L data from the provided material.',
+    ];
+
+    if (normalized) {
+      userPromptSections.push(`Normalized P&L text:\n${normalized}`);
+    }
+
+    if (structuredLines.length > 0) {
+      userPromptSections.push(
+        `Regex pre-scan line items (use these to ensure no omissions):\n${JSON.stringify(
+          structuredLines,
+          null,
+          2,
+        )}`,
+      );
+    }
+
     const response = await openaiClient.chat.completions.create({
       model: 'gpt-4o',
       messages: [
@@ -45,7 +193,7 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
         {
           role: 'user',
           content: [
-            { type: 'text', text: 'Extract structured P&L data.' },
+            { type: 'text', text: userPromptSections.join('\n\n') },
             { type: 'file', file: { file_id: fileUpload.id } },
           ],
         },
@@ -53,7 +201,9 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
       response_format: { type: 'json_object' },
     });
 
-    console.log('Raw GPT response:', response.choices?.[0]?.message?.content);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('🔍 Raw GPT output:', response.choices?.[0]?.message?.content);
+    }
 
     let content = response.choices?.[0]?.message?.content;
     if (Array.isArray(content)) {
@@ -65,7 +215,15 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
       throw new Error('No structured content returned from OpenAI.');
     }
 
-    const parsed = JSON.parse(content);
+    const sanitizedContent = content.replace(/```json|```/gi, '').trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(sanitizedContent);
+    } catch (parseError) {
+      console.error('GPT response was not valid JSON:', sanitizedContent);
+      throw new Error('Parser returned invalid JSON.');
+    }
     if (
       !parsed ||
       typeof parsed !== 'object' ||
@@ -76,7 +234,242 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
       throw new Error('Parser did not return income and expense data.');
     }
 
-    return parsed;
+    const merged = { ...parsed };
+
+    const normalizeLabelKey = (label) =>
+      (label || '')
+        .toString()
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+
+    const normalizeSection = (sectionKey) => {
+      const section = merged[sectionKey];
+      if (!section || typeof section !== 'object') {
+        merged[sectionKey] = { individual_items: {} };
+        return;
+      }
+
+      const items = section.individual_items;
+      if (Array.isArray(items)) {
+        merged[sectionKey] = {
+          ...section,
+          individual_items: items.reduce((acc, item) => {
+            if (item && typeof item === 'object' && item.label) {
+              const key = normalizeLabelKey(item.label);
+              if (key) {
+                const numericAmount = Number(item.amount);
+                acc[key] = {
+                  label: item.label,
+                  amount: Number.isFinite(numericAmount)
+                    ? numericAmount
+                    : (Number.isFinite(item.amount) ? item.amount : 0),
+                };
+              }
+            }
+            return acc;
+          }, {}),
+        };
+      } else if (!items || typeof items !== 'object') {
+        merged[sectionKey] = { ...section, individual_items: {} };
+      }
+    };
+
+    Object.keys(merged).forEach((key) => {
+      if (
+        merged[key] &&
+        typeof merged[key] === 'object' &&
+        'individual_items' in merged[key]
+      ) {
+        normalizeSection(key);
+      }
+    });
+
+    normalizeSection('income');
+    normalizeSection('expenses');
+
+    const sectionKeyForLine = (section) => {
+      if (!section) return null;
+      if (section === 'expense') return 'expenses';
+      return section;
+    };
+
+    const structuredTotals = structuredLines.reduce(
+      (totals, line) => {
+        const sectionKey = sectionKeyForLine(line.section) || 'expenses';
+        if (!totals[sectionKey]) {
+          totals[sectionKey] = 0;
+        }
+        totals[sectionKey] += Number.isFinite(line.amount) ? line.amount : 0;
+        return totals;
+      },
+      { income: 0, expenses: 0 },
+    );
+
+    for (const line of structuredLines) {
+      const targetKey = sectionKeyForLine(line.section) || 'expenses';
+      if (!merged[targetKey]) {
+        merged[targetKey] = { individual_items: {} };
+      }
+      if (
+        !merged[targetKey].individual_items ||
+        Array.isArray(merged[targetKey].individual_items)
+      ) {
+        normalizeSection(targetKey);
+      }
+
+      const items = merged[targetKey].individual_items;
+      const plainKey = normalizeLabelKey(line.label);
+      const codeKey = line.code
+        ? `${line.code}-${plainKey || normalizeLabelKey(line.code)}`
+        : plainKey;
+      const existingKey = plainKey && items[plainKey] ? plainKey : null;
+
+      const normalizedAmount = Number.isFinite(line.amount)
+        ? Math.round(line.amount)
+        : 0;
+
+      if (existingKey) {
+        if (line.code && !items[existingKey].label?.startsWith(line.code)) {
+          items[existingKey].label = `${line.code} ${items[existingKey].label}`.trim();
+        }
+        if (!Number.isFinite(items[existingKey].amount)) {
+          items[existingKey].amount = normalizedAmount;
+        }
+      } else if (codeKey && !items[codeKey]) {
+        items[codeKey] = {
+          label: line.code ? `${line.code} ${line.label}` : line.label,
+          amount: normalizedAmount,
+        };
+      }
+    }
+
+    const resolveEntryForLine = (line) => {
+      const targetKey = sectionKeyForLine(line.section) || 'expenses';
+      const items = merged[targetKey]?.individual_items;
+      if (!items || Array.isArray(items)) return null;
+      const plainKey = normalizeLabelKey(line.label);
+      const codeKey = line.code
+        ? `${line.code}-${plainKey || normalizeLabelKey(line.code)}`
+        : plainKey;
+      if (plainKey && items[plainKey]) {
+        return { items, key: plainKey };
+      }
+      if (codeKey && items[codeKey]) {
+        return { items, key: codeKey };
+      }
+      return { items, key: null };
+    };
+
+    const missing = structuredLines.filter((line) => {
+      const lookup = resolveEntryForLine(line);
+      return !lookup || !lookup.key;
+    });
+
+    console.warn('Missing after merge:', missing.map((m) => m.label));
+
+    const debugEntries = [];
+
+    if (missing.length > 0) {
+      debugEntries.push(
+        ...missing.map((m) => ({
+          file_name: filename,
+          section: m.section,
+          label: m.code ? `${m.code} ${m.label}` : m.label,
+          amount: Number.isFinite(m.amount) ? m.amount : 0,
+        })),
+      );
+    }
+
+    Object.keys(merged).forEach((key) => {
+      const section = merged[key];
+      if (
+        section &&
+        typeof section === 'object' &&
+        section.individual_items &&
+        !Array.isArray(section.individual_items)
+      ) {
+        section.individual_items = Object.values(section.individual_items);
+      }
+    });
+
+    if (merged.income && Array.isArray(merged.income.individual_items)) {
+      const totalIncome = merged.income.individual_items.reduce((sum, item) => {
+        const value = Number.isFinite(item?.amount) ? item.amount : 0;
+        return sum + value;
+      }, 0);
+      merged.income.total_income = Math.round(totalIncome);
+    }
+
+    if (merged.expenses && Array.isArray(merged.expenses.individual_items)) {
+      const totalExpense = merged.expenses.individual_items.reduce((sum, item) => {
+        const value = Number.isFinite(item?.amount) ? item.amount : 0;
+        return sum + value;
+      }, 0);
+      merged.expenses.total_expense = Math.round(totalExpense);
+    }
+
+    if ('net_income' in merged) {
+      const totalIncome = merged.income?.total_income || 0;
+      const totalExpense = merged.expenses?.total_expense || 0;
+      merged.net_income = Math.round(totalIncome - totalExpense);
+    }
+
+    const mergedIncomeTotal = merged.income?.total_income || 0;
+    const mergedExpenseTotal = merged.expenses?.total_expense || 0;
+
+    const incomeMismatch = Math.abs((structuredTotals.income || 0) - mergedIncomeTotal);
+    const expenseMismatch = Math.abs((structuredTotals.expenses || 0) - mergedExpenseTotal);
+
+    if (incomeMismatch > 500) {
+      const diff = (structuredTotals.income || 0) - mergedIncomeTotal;
+      debugEntries.push({
+        file_name: filename,
+        section: 'income',
+        label: 'Total mismatch',
+        amount: Number(diff.toFixed(2)),
+      });
+    }
+
+    if (expenseMismatch > 500) {
+      const diff = (structuredTotals.expenses || 0) - mergedExpenseTotal;
+      debugEntries.push({
+        file_name: filename,
+        section: 'expense',
+        label: 'Total mismatch',
+        amount: Number(diff.toFixed(2)),
+      });
+    }
+
+    const netCheck = (structuredTotals.income || 0) - (structuredTotals.expenses || 0);
+    const netFromDocTotals =
+      docTotals.income != null && docTotals.expense != null
+        ? docTotals.income - docTotals.expense
+        : null;
+
+    if (
+      netFromDocTotals != null &&
+      Math.abs(netFromDocTotals - netCheck) > 500
+    ) {
+      const diff = Number((netFromDocTotals - netCheck).toFixed(2));
+      console.warn(`⚠️ P&L discrepancy: ${diff}`);
+      debugEntries.push({
+        file_name: filename,
+        section: 'debug',
+        label: 'Net Mismatch',
+        amount: diff,
+      });
+    }
+
+    if (supabase && debugEntries.length > 0) {
+      try {
+        await supabase.from('pnl_debug_log').insert(debugEntries);
+      } catch (debugError) {
+        console.error('Unable to persist missing line items to Supabase:', debugError);
+      }
+    }
+
+    return merged;
   } finally {
     if (typeof stream.close === 'function') {
       stream.close();
@@ -92,15 +485,114 @@ Parse the attached document and return **valid JSON** with this exact schema:\n\
   }
 }
 
+async function parseAndPersist(tempFilePath, originalFilename) {
+  const parsed = await extractStructuredPnlWithGpt(tempFilePath, originalFilename);
+
+  if (!parsed || typeof parsed !== 'object') {
+    const error = new Error('Unable to parse structured P&L data.');
+    error.statusCode = 422;
+    throw error;
+  }
+
+  if (supabase) {
+    try {
+      await supabase.from('parsed_pnls').insert({
+        filename: originalFilename,
+        parsed_json: parsed,
+        parsed_at: new Date().toISOString(),
+        model_used: 'gpt-4o',
+      });
+    } catch (storageError) {
+      console.error('Unable to persist parsed P&L payload:', storageError);
+    }
+  }
+
+  return {
+    success: true,
+    data: parsed,
+    metadata: {
+      source_filename: originalFilename,
+      extraction_strategy: 'gpt-4o-structured',
+      model_used: 'gpt-4o',
+    },
+  };
+}
+
+export async function POST(req) {
+  let tempFilePath;
+  let originalFilename = 'upload.pdf';
+
+  try {
+    const respondJson = await ensureJsonResponder();
+
+    const formData = await req.formData();
+    const file = formData.get('file');
+
+    if (!file || typeof file === 'string') {
+      throw Object.assign(new Error('No file uploaded'), { statusCode: 400 });
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    await fsPromises.mkdir('/tmp', { recursive: true });
+
+    originalFilename = typeof file.name === 'string' && file.name ? file.name : 'upload.pdf';
+    const safeName = originalFilename.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    tempFilePath = path.join(
+      '/tmp',
+      `${Date.now()}-${Math.random().toString(36).slice(2)}-${safeName || 'upload.pdf'}`,
+    );
+
+    await fsPromises.writeFile(tempFilePath, buffer);
+
+    const payload = await parseAndPersist(tempFilePath, originalFilename);
+
+    return respondJson(payload);
+  } catch (error) {
+    console.error('❌ P&L parse server error:', error);
+    const respondJson = await ensureJsonResponder();
+    const statusCode = error?.statusCode || 500;
+    return respondJson(
+      {
+        error: error?.message || 'Unexpected server error',
+      },
+      { status: statusCode },
+    );
+  } finally {
+    if (tempFilePath) {
+      await fsPromises.unlink(tempFilePath).catch(() => {});
+    }
+  }
+}
+
+function sendNodeJson(res, statusCode, payload) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(payload));
+}
+
 export default async function handler(req, res) {
+  if (!res || typeof req?.formData === 'function' || req instanceof Request) {
+    const response = await POST(req);
+    if (res && typeof res.setHeader === 'function') {
+      res.statusCode = response.status || 200;
+      response.headers?.forEach?.((value, key) => {
+        res.setHeader(key, value);
+      });
+      const text = await response.text();
+      res.end(text);
+    }
+    return response;
+  }
+
   if (req.method !== 'POST') {
-    res.setHeader('Allow', ['POST']);
-    res.status(405).json({ success: false, error: 'Method not allowed' });
+    sendNodeJson(res, 405, { error: 'Method not allowed' });
     return;
   }
 
   let tempFilePath;
-  let originalFilename;
+  let originalFilename = 'upload.pdf';
 
   try {
     await fsPromises.mkdir('/tmp', { recursive: true });
@@ -126,53 +618,25 @@ export default async function handler(req, res) {
     const fileDescriptor = Array.isArray(incomingFile) ? incomingFile[0] : incomingFile;
 
     if (!fileDescriptor) {
-      res.status(400).json({ success: false, error: 'No file uploaded.' });
+      sendNodeJson(res, 400, { error: 'No file uploaded' });
       return;
     }
 
     tempFilePath = fileDescriptor.filepath || fileDescriptor.path;
-    originalFilename = fileDescriptor.originalFilename || fileDescriptor.newFilename || 'upload.pdf';
+    originalFilename =
+      fileDescriptor.originalFilename || fileDescriptor.newFilename || originalFilename;
 
     if (!tempFilePath) {
-      res.status(400).json({ success: false, error: 'Uploaded file is missing a temporary path.' });
+      sendNodeJson(res, 400, { error: 'Uploaded file is missing a temporary path.' });
       return;
     }
 
-    const parsed = await extractStructuredPnlWithGpt(tempFilePath, originalFilename);
-
-    if (!parsed || typeof parsed !== 'object') {
-      res.status(422).json({ success: false, error: 'Unable to parse structured P&L data.' });
-      return;
-    }
-
-    if (supabase) {
-      try {
-        await supabase.from('parsed_pnls').insert({
-          filename: originalFilename,
-          parsed_json: parsed,
-          parsed_at: new Date().toISOString(),
-          model_used: 'gpt-4o',
-        });
-      } catch (storageError) {
-        console.error('Unable to persist parsed P&L payload:', storageError);
-      }
-    }
-
-    res.status(200).json({
-      success: true,
-      data: parsed,
-      metadata: {
-        source_filename: originalFilename,
-        extraction_strategy: 'gpt-4o-structured',
-        model_used: 'gpt-4o',
-      },
-    });
+    const payload = await parseAndPersist(tempFilePath, originalFilename);
+    sendNodeJson(res, 200, payload);
   } catch (error) {
-    console.error('Error parsing P&L:', error);
+    console.error('❌ P&L parse server error:', error);
     const statusCode = error?.statusCode || 500;
-    res
-      .status(statusCode)
-      .json({ success: false, error: error.message || 'Unexpected error while parsing P&L.' });
+    sendNodeJson(res, statusCode, { error: error?.message || 'Unexpected server error' });
   } finally {
     if (tempFilePath) {
       await fsPromises.unlink(tempFilePath).catch(() => {});
